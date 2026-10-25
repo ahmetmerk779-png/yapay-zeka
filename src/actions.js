@@ -1,0 +1,1394 @@
+'use strict'
+// Doğrulanmış eylemlerin Mineflayer ile gerçekten uygulandığı yer.
+// Her uygulayıcı { ok, msg } döndürür; hata fırlatsa bile plan çalıştırıcı yakalar.
+
+const { goals } = require('mineflayer-pathfinder')
+const { Vec3 } = require('vec3')
+const Sch = require('./schematic')
+const search = require('./search')
+const crystal = require('./crystal')
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const ok = (msg) => ({ ok: true, msg })
+const fail = (msg) => ({ ok: false, msg })
+
+const LIQUIDS = new Set(['water', 'lava', 'flowing_water', 'flowing_lava'])
+const REPLACEABLE = new Set(['air', 'cave_air', 'void_air', 'water', 'lava', 'short_grass', 'grass', 'tall_grass', 'fern', 'snow', 'vine', 'dead_bush', 'seagrass'])
+const SWORD_RANK = ['wooden_sword', 'golden_sword', 'stone_sword', 'iron_sword', 'diamond_sword', 'netherite_sword']
+const CONTAINER_BLOCKS = ['chest', 'trapped_chest', 'barrel']
+
+const isLiquid = (b) => !!b && LIQUIDS.has(b.name)
+const isAir = (b) => !b || b.name === 'air' || b.name === 'cave_air' || b.name === 'void_air'
+
+// ---------------------------------------------------------------- yardımcılar
+async function goTo(inst, goal) {
+  try { await inst.bot.pathfinder.goto(goal); return true } catch (e) { return false }
+}
+
+const findInv = (inst, name) => inst.bot.inventory.items().find((i) => i.name === name)
+const invCount = (inst, name) => inst.bot.inventory.items().filter((i) => i.name === name).reduce((s, i) => s + i.count, 0)
+
+async function waitFor(ms, cancelled) {
+  const end = Date.now() + ms
+  while (Date.now() < end && !cancelled()) await sleep(200)
+}
+
+function playerEntity(inst, name) {
+  return inst.bot.players[name] && inst.bot.players[name].entity
+}
+
+function nearestEntity(inst, filter, maxDist = 48) {
+  const p = inst.bot.entity.position
+  let best = null
+  let bestD = maxDist
+  for (const e of Object.values(inst.bot.entities)) {
+    if (e === inst.bot.entity || !filter(e)) continue
+    const d = e.position.distanceTo(p)
+    if (d < bestD) { best = e; bestD = d }
+  }
+  return best
+}
+
+async function digBlock(inst, block) {
+  const bot = inst.bot
+  const tool = inst.movements.bestHarvestTool ? inst.movements.bestHarvestTool(block) : null
+  if (block.harvestTools && bot.game.gameMode !== 'creative' && !(tool && block.harvestTools[tool.type])) {
+    throw new Error(`${block.name} kırmak için uygun aletim yok`)
+  }
+  if (tool) await bot.equip(tool, 'hand')
+  await bot.dig(block)
+}
+
+async function equipBestWeapon(inst) {
+  const items = inst.bot.inventory.items()
+  const swords = items.filter((i) => SWORD_RANK.includes(i.name))
+  const best = swords.sort((a, b) => SWORD_RANK.indexOf(b.name) - SWORD_RANK.indexOf(a.name))[0] ||
+    items.find((i) => i.name.endsWith('_axe'))
+  if (best) { try { await inst.bot.equip(best, 'hand') } catch (e) { /* önemsiz */ } }
+}
+
+function yawDir(yaw) {
+  const x = -Math.sin(yaw)
+  const z = -Math.cos(yaw)
+  return Math.abs(x) > Math.abs(z) ? [Math.sign(x), 0] : [0, Math.sign(z)]
+}
+
+// ---- yerleştirme ipuçları: blok özelliklerinden (facing/half/delay...) bakış yönü ve referans yüzü çıkar
+const DIR_VEC = { north: [0, 0, -1], south: [0, 0, 1], east: [1, 0, 0], west: [-1, 0, 0], up: [0, 1, 0], down: [0, -1, 0] }
+const OPPOSITE = { north: 'south', south: 'north', east: 'west', west: 'east', up: 'down', down: 'up' }
+const SAME_AS_LOOK = /(_stairs|_door|_fence_gate|_bed)$/
+const FACES_PLAYER = /(furnace|smoker|chest|barrel|dispenser|dropper|observer|piston|repeater|comparator|lectern|loom|stonecutter|glazed_terracotta|carved_pumpkin|jack_o_lantern)$/
+const WALL_MOUNT = /^(torch|soul_torch|redstone_torch|wall_torch|soul_wall_torch|redstone_wall_torch|ladder|lever|tripwire_hook|.*_wall_(sign|banner|head|skull|hanging_sign)|.*_button)$/
+
+function hintsFor(name, props = {}) {
+  const h = {}
+  const f = props.facing
+  if (f && DIR_VEC[f]) {
+    if (SAME_AS_LOOK.test(name)) h.lookDir = f
+    else if (FACES_PLAYER.test(name)) h.lookDir = OPPOSITE[f]
+    if (WALL_MOUNT.test(name) && (props.face === undefined || props.face === 'wall')) h.refDir = DIR_VEC[OPPOSITE[f]]
+  }
+  if (props.face === 'floor') h.refDir = DIR_VEC.down
+  else if (props.face === 'ceiling') h.refDir = DIR_VEC.up
+  if (props.half === 'top' || props.type === 'top') h.half = 'top'
+  if (props.delay && /repeater$/.test(name)) h.clicks = Math.max(0, Math.min(3, Number(props.delay) - 1))
+  if (props.mode === 'subtract' && /comparator$/.test(name)) h.clicks = 1
+  return h
+}
+
+// 'forward/back/left/right' gibi göreli yönleri botun baktığı yöne göre dünya yönüne çevir
+function worldFacing(inst, f) {
+  if (!f) return null
+  if (DIR_VEC[f]) return f
+  const [fx, fz] = yawDir(inst.bot.entity.yaw)
+  const nameOf = (dx, dz) => (dx > 0 ? 'east' : dx < 0 ? 'west' : dz > 0 ? 'south' : 'north')
+  if (f === 'forward') return nameOf(fx, fz)
+  if (f === 'back') return nameOf(-fx, -fz)
+  if (f === 'right') return nameOf(-fz, fx)
+  if (f === 'left') return nameOf(fz, -fx)
+  return null
+}
+
+// mineflayer'ın placeBlock'u her zaman yüze bakar; bakış yönünü korumak için dahili seçenekli sürümü kullan
+async function rawPlace(bot, ref, face, extra = {}) {
+  if (bot._placeBlockWithOptions) return bot._placeBlockWithOptions(ref, face, { swingArm: 'right', ...extra })
+  return bot.placeBlock(ref, face)
+}
+
+// Blok yerleştirme: komşu bir referans blok bulur, menzile girer, koyar.
+// opts: { lookDir, refDir:[dx,dy,dz], half, clicks }
+async function placeAt(inst, itemName, pos, opts = {}) {
+  const bot = inst.bot
+  const target = bot.blockAt(pos)
+  if (target && !REPLACEABLE.has(target.name)) return 'full'
+  const item = findInv(inst, itemName)
+  if (!item) return 'noitem'
+
+  const eye = bot.entity.position.offset(0, 1.62, 0)
+  if (eye.distanceTo(pos.offset(0.5, 0.5, 0.5)) > 4.3) {
+    await goTo(inst, new goals.GoalNear(pos.x, pos.y, pos.z, 3))
+  }
+  const feet = bot.entity.position.floored()
+  if (feet.equals(pos) || feet.offset(0, 1, 0).equals(pos)) {
+    await goTo(inst, new goals.GoalInvert(new goals.GoalNear(pos.x, pos.y, pos.z, 2)))
+  }
+
+  const faces = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]
+  if (opts.refDir) faces.unshift(opts.refDir)
+  for (const f of faces) {
+    const ref = bot.blockAt(pos.offset(f[0], f[1], f[2]))
+    if (!ref || isAir(ref) || isLiquid(ref) || ref.boundingBox !== 'block') continue
+    try {
+      await bot.equip(item, 'hand')
+      const face = new Vec3(-f[0], -f[1], -f[2])
+      if (opts.lookDir && DIR_VEC[opts.lookDir]) {
+        const v = DIR_VEC[opts.lookDir]
+        await bot.lookAt(bot.entity.position.offset(0, 1.62, 0).plus(new Vec3(v[0], v[1], v[2]).scaled(5)), true)
+        await rawPlace(bot, ref, face, { forceLook: 'ignore', half: opts.half })
+      } else {
+        await rawPlace(bot, ref, face, { half: opts.half })
+      }
+      if (opts.clicks) {
+        const placed = bot.blockAt(pos)
+        for (let i = 0; i < opts.clicks && placed; i++) { try { await bot.activateBlock(placed) } catch (e) { break } await sleep(150) }
+      }
+      return 'ok'
+    } catch (e) { /* diğer yüzü dene */ }
+  }
+  return 'noref'
+}
+
+async function openNearestContainer(inst, a) {
+  const bot = inst.bot
+  let block
+  if (a.pos) block = bot.blockAt(new Vec3(a.pos.x, a.pos.y, a.pos.z))
+  else {
+    const ids = CONTAINER_BLOCKS.map((n) => inst.mcData.blocksByName[n]).filter(Boolean).map((b) => b.id)
+    block = bot.findBlock({ matching: ids, maxDistance: 32 })
+  }
+  if (!block) throw new Error('yakında sandık/varil bulamadım')
+  await goTo(inst, new goals.GoalLookAtBlock(block.position, bot.world))
+  return bot.openContainer(block)
+}
+
+// ---------------------------------------------------------------- hareket
+async function stop(inst) { inst.stopEverything(); inst.mode = 'busy'; return ok('durdum') }
+
+async function follow(inst, a) {
+  const e = playerEntity(inst, a.target)
+  if (!e) return fail(`${a.target} görüş alanımda değil`)
+  inst.bot.pathfinder.setGoal(new goals.GoalFollow(e, 2), true)
+  inst.mode = 'follow'
+  return ok(`${a.target} takip ediliyor`)
+}
+
+async function goto_player(inst, a) {
+  const e = playerEntity(inst, a.target)
+  if (!e) return fail(`${a.target} çok uzakta, göremiyorum`)
+  return (await goTo(inst, new goals.GoalNear(e.position.x, e.position.y, e.position.z, 2)))
+    ? ok(`${a.target} yanına vardım`) : fail('oraya yol bulamadım')
+}
+
+async function goto_(inst, a) {
+  const goal = a.y === null ? new goals.GoalNearXZ(a.x, a.z, 1) : new goals.GoalNear(a.x, a.y, a.z, 1)
+  return (await goTo(inst, goal)) ? ok('koordinata vardım') : fail('koordinata ulaşamadım (yol yok ya da zaman aşımı)')
+}
+
+async function goto_block(inst, a) {
+  const block = inst.bot.findBlock({ matching: a.defs.map((d) => d.id), maxDistance: a.maxDistance })
+  if (!block) return fail(`${a.maxDistance} blok çevrede ${a.label} bulamadım`)
+  const p = block.position
+  return (await goTo(inst, new goals.GoalNear(p.x, p.y, p.z, 2)))
+    ? ok(`${a.label} yanına geldim (${p.x}, ${p.y}, ${p.z})`) : fail(`${a.label} bloğuna ulaşamadım`)
+}
+
+async function wander(inst, a, { cancelled }) {
+  const start = inst.bot.entity.position.clone()
+  const end = Date.now() + a.seconds * 1000
+  let moves = 0
+  while (!cancelled() && Date.now() < end) {
+    const ang = Math.random() * Math.PI * 2
+    const r = 3 + Math.random() * Math.max(1, a.radius - 3)
+    await goTo(inst, new goals.GoalNearXZ(start.x + Math.cos(ang) * r, start.z + Math.sin(ang) * r, 2))
+    moves++
+    await waitFor(400 + Math.random() * 1800, cancelled)
+  }
+  return ok(`${moves} noktaya uğrayarak gezindim`)
+}
+
+async function look_at(inst, a) {
+  const bot = inst.bot
+  if (a.kind === 'pos') { await bot.lookAt(new Vec3(a.x + 0.5, a.y + 0.5, a.z + 0.5)); return ok('baktım') }
+  const e = a.kind === 'player' ? playerEntity(inst, a.name) : nearestEntity(inst, (x) => x.name === a.name)
+  if (!e) return fail(`${a.name} görünürde yok`)
+  await bot.lookAt(e.position.offset(0, e.height || 1.6, 0))
+  return ok(`${a.name} tarafına baktım`)
+}
+
+async function jump(inst) {
+  inst.bot.setControlState('jump', true)
+  await sleep(400)
+  inst.bot.setControlState('jump', false)
+  return ok('zıpladım')
+}
+
+async function sneak(inst, a) { inst.bot.setControlState('sneak', a.on); return ok(a.on ? 'çömeldim' : 'ayağa kalktım') }
+
+async function set_home(inst, a) {
+  const p = inst.bot.entity.position.floored()
+  inst.homes[a.name] = p
+  if (inst.saveHomes) inst.saveHomes()
+  return ok(`"${a.name}" noktası kaydedildi (${p.x}, ${p.y}, ${p.z})`)
+}
+
+async function go_home(inst, a) {
+  const p = inst.homes[a.name]
+  if (!p) return fail(`"${a.name}" adında kayıtlı nokta yok. Kayıtlılar: ${Object.keys(inst.homes).join(', ') || 'yok'}`)
+  return (await goTo(inst, new goals.GoalNear(p.x, p.y, p.z, 1))) ? ok(`"${a.name}" noktasına döndüm`) : fail('eve yol bulamadım')
+}
+
+async function mount(inst, a) {
+  const isBoat = a.name.endsWith('boat')
+  const e = nearestEntity(inst, (x) => x.name === a.name || (isBoat && x.name.endsWith('boat') && !x.name.includes('chest')), 24)
+  if (!e) return fail(`yakında ${a.name} yok`)
+  await goTo(inst, new goals.GoalNear(e.position.x, e.position.y, e.position.z, 2))
+  try { inst.bot.mount(e); return ok(`${a.name} üzerine bindim`) } catch (err) { return fail(`binemedim (${err.message})`) }
+}
+
+async function dismount(inst) { try { inst.bot.dismount() } catch (e) { return fail('zaten bir şeye binmiyorum') } return ok('indim') }
+
+async function sleep_(inst) {
+  const bot = inst.bot
+  if (bot.time && bot.time.isDay && !bot.isRaining) return fail('şu an gündüz, uyunamaz')
+  const bed = bot.findBlock({ matching: (b) => bot.isABed(b), maxDistance: 32 })
+  if (!bed) return fail('32 blok çevrede yatak yok')
+  await goTo(inst, new goals.GoalNear(bed.position.x, bed.position.y, bed.position.z, 1))
+  try { await bot.sleep(bed); return ok('yatağa yattım') } catch (e) { return fail(`uyuyamadım (${e.message})`) }
+}
+
+async function wake(inst) { try { await inst.bot.wake(); return ok('uyandım') } catch (e) { return fail('zaten uyanığım') } }
+
+// ---------------------------------------------------------------- toplama
+async function collect(inst, a, { cancelled }) {
+  const ids = a.defs.map((b) => b.id)
+  const idSet = new Set(ids)
+  let mined = 0
+  let fails = 0
+  let lastErr = ''
+  while (!cancelled() && mined < a.count && fails < 4) {
+    const block = inst.bot.findBlock({ matching: ids, maxDistance: 64 })
+    if (!block) {
+      return mined > 0 ? ok(`${mined} adet ${a.label} kırdım, çevrede başka kalmadı`) : fail(`64 blok çevrede ${a.label} bulamadım`)
+    }
+    try {
+      await inst.bot.pathfinder.goto(new goals.GoalLookAtBlock(block.position, inst.bot.world))
+      if (cancelled()) break
+      const fresh = inst.bot.blockAt(block.position)
+      if (!fresh || !idSet.has(fresh.type)) continue
+      await digBlock(inst, fresh)
+      mined++
+      fails = 0
+      await sleep(250)
+      const drop = nearestEntity(inst, (e) => e.name === 'item' && e.position.distanceTo(block.position) < 5, 8)
+      if (drop && !cancelled()) await goTo(inst, new goals.GoalNear(drop.position.x, drop.position.y, drop.position.z, 0.8))
+    } catch (e) {
+      if (cancelled()) break
+      lastErr = e.message
+      if (/uygun aletim yok/.test(e.message)) return fail(e.message)
+      fails++
+      await sleep(400)
+    }
+  }
+  if (cancelled()) return fail('iptal edildi')
+  return mined >= a.count ? ok(`${mined} adet ${a.label} topladım`) : fail(`${mined}/${a.count} ${a.label} toplayabildim (${lastErr || 'engellere takıldım'})`)
+}
+
+async function pickup(inst, a, { cancelled }) {
+  const seen = new Set()
+  let n = 0
+  while (!cancelled() && n < 40) {
+    const e = nearestEntity(inst, (x) => x.name === 'item' && !seen.has(x.id) && x.position.distanceTo(inst.bot.entity.position) <= a.radius, a.radius)
+    if (!e) break
+    seen.add(e.id)
+    await goTo(inst, new goals.GoalNear(e.position.x, e.position.y, e.position.z, 0.7))
+    await sleep(150)
+    n++
+  }
+  return n > 0 ? ok(`${n} eşyanın başına gittim ve topladım`) : fail('yakında yerde eşya yok')
+}
+
+async function tunnel(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const dirs = { north: [0, -1], south: [0, 1], east: [1, 0], west: [-1, 0] }
+  const [dx, dz] = a.direction === 'forward' ? yawDir(bot.entity.yaw) : dirs[a.direction]
+  let dug = 0
+  for (let i = 0; i < a.length && !cancelled(); i++) {
+    const front = bot.entity.position.floored().offset(dx, 0, dz)
+    for (const dy of [0, 1]) {
+      const b = bot.blockAt(front.offset(0, dy, 0))
+      if (!b) continue
+      if (isLiquid(b)) return fail(`ilerde ${b.name} var, güvenlik için durdum (${i} blok ilerledim)`)
+      if (!isAir(b) && b.diggable) {
+        try { await digBlock(inst, b); dug++ } catch (e) { return fail(`${e.message} (${i} blok ilerledim)`) }
+      }
+    }
+    const below = bot.blockAt(front.offset(0, -1, 0))
+    if (!below || isLiquid(below) || isAir(below)) return fail(`ilerde boşluk/sıvı var, güvenlik için durdum (${i} blok ilerledim)`)
+    if (!(await goTo(inst, new goals.GoalBlock(front.x, front.y, front.z)))) return fail(`ilerleyemedim (${i} blok gittim)`)
+  }
+  return cancelled() ? fail('iptal edildi') : ok(`${a.length} blokluk tünel kazdım`)
+}
+
+async function dig_down(inst, a) {
+  const p = inst.bot.entity.position.floored()
+  const targetY = a.y !== undefined ? a.y : p.y - a.depth
+  if (targetY >= p.y) return fail('hedef y şu anki yüksekliğimden aşağıda değil')
+  const ok1 = await goTo(inst, new goals.GoalBlock(p.x, targetY, p.z))
+  const now = Math.floor(inst.bot.entity.position.y)
+  return ok1 ? ok(`y=${now} seviyesine indim`) : fail(`y=${now} seviyesine kadar inebildim, sonra engel/tehlike çıktı`)
+}
+
+const CROPS = {
+  wheat: { seed: 'wheat_seeds', max: 7 }, carrots: { seed: 'carrot', max: 7 },
+  potatoes: { seed: 'potato', max: 7 }, beetroots: { seed: 'beetroot_seeds', max: 3 },
+  nether_wart: { seed: 'nether_wart', max: 3 },
+}
+
+function cropAge(b) {
+  try { const p = b.getProperties(); if (p && p.age !== undefined) return Number(p.age) } catch (e) { /* eski sürüm */ }
+  return b.metadata
+}
+
+async function farm(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const ids = Object.keys(CROPS).map((n) => inst.mcData.blocksByName[n]).filter(Boolean).map((b) => b.id)
+  const spots = bot.findBlocks({ matching: ids, maxDistance: a.radius, count: 80 })
+  let harvested = 0
+  let replanted = 0
+  for (const pos of spots) {
+    if (cancelled()) break
+    const b = bot.blockAt(pos)
+    if (!b || !CROPS[b.name] || cropAge(b) < CROPS[b.name].max) continue
+    if (!(await goTo(inst, new goals.GoalNear(pos.x, pos.y, pos.z, 2)))) continue
+    try {
+      await bot.dig(b)
+      harvested++
+      await sleep(200)
+      const seed = findInv(inst, CROPS[b.name].seed)
+      const ground = bot.blockAt(pos.offset(0, -1, 0))
+      if (seed && ground && ['farmland', 'soul_sand'].includes(ground.name)) {
+        await bot.equip(seed, 'hand')
+        await bot.placeBlock(ground, new Vec3(0, 1, 0))
+        replanted++
+      }
+    } catch (e) { /* sıradaki */ }
+  }
+  if (cancelled()) return fail('iptal edildi')
+  return harvested > 0 ? ok(`${harvested} ekin hasat ettim, ${replanted} tanesini yeniden diktim`) : fail(`${a.radius} blok çevrede olgun ekin bulamadım`)
+}
+
+async function fish(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const rod = findInv(inst, 'fishing_rod')
+  if (!rod) return fail('envanterimde olta yok')
+  const water = bot.findBlock({ matching: inst.mcData.blocksByName.water.id, maxDistance: 32 })
+  if (!water) return fail('yakında su yok')
+  await goTo(inst, new goals.GoalNear(water.position.x, water.position.y, water.position.z, 4))
+  await bot.equip(rod, 'hand')
+  await bot.lookAt(water.position.offset(0.5, 0.5, 0.5))
+  const end = Date.now() + a.seconds * 1000
+  let caught = 0
+  while (!cancelled() && Date.now() < end && (a.catches === null || caught < a.catches)) {
+    try {
+      let timer
+      const timeout = new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('zaman aşımı')), 45000) })
+      const aborted = (async () => { while (!cancelled()) await sleep(300); return 'iptal' })()
+      const res = await Promise.race([bot.fish(), timeout, aborted])
+      clearTimeout(timer)
+      if (res === 'iptal') { try { bot.activateItem() } catch (e) {} break }
+      caught++
+    } catch (e) {
+      try { bot.activateItem() } catch (err) { /* olta toplama */ }
+      await sleep(600)
+    }
+  }
+  return cancelled() ? fail('iptal edildi') : (caught > 0 ? ok(`${caught} balık tuttum`) : fail('hiçbir şey yakalayamadım'))
+}
+
+async function shear(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const shears = findInv(inst, 'shears')
+  if (!shears) return fail('envanterimde makas yok')
+  const wool = () => bot.inventory.items().filter((i) => i.name.endsWith('_wool')).reduce((s, i) => s + i.count, 0)
+  const before = wool()
+  const sheep = Object.values(bot.entities).filter((e) => e.name === 'sheep' && e.position.distanceTo(bot.entity.position) <= a.radius)
+  await bot.equip(shears, 'hand')
+  for (const s of sheep.slice(0, 12)) {
+    if (cancelled()) break
+    await goTo(inst, new goals.GoalNear(s.position.x, s.position.y, s.position.z, 2))
+    try { await bot.activateEntity(s) } catch (e) { /* atla */ }
+    await sleep(400)
+  }
+  await sleep(500)
+  const got = wool() - before
+  return got > 0 ? ok(`${got} yün kırptım`) : fail(sheep.length ? 'koyunlar zaten kırpılmış olabilir' : 'yakında koyun yok')
+}
+
+async function breed(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const food = findInv(inst, a.itemName)
+  if (!food) return fail(`envanterimde ${a.itemName} yok`)
+  const animals = Object.values(bot.entities)
+    .filter((e) => e.name === a.animal && e.position.distanceTo(bot.entity.position) <= 20)
+    .sort((x, y) => x.position.distanceTo(bot.entity.position) - y.position.distanceTo(bot.entity.position))
+    .slice(0, 2)
+  if (animals.length < 2) return fail(`çiftleştirmek için en az 2 ${a.animal} lazım, ${animals.length} tane buldum`)
+  let fed = 0
+  for (const an of animals) {
+    if (cancelled()) break
+    await goTo(inst, new goals.GoalNear(an.position.x, an.position.y, an.position.z, 2))
+    try { await bot.equip(food, 'hand'); await bot.activateEntity(an); fed++ } catch (e) { /* sıradaki */ }
+    await sleep(400)
+  }
+  return fed === 2 ? ok(`iki ${a.animal} yemledim`) : fail(`sadece ${fed} hayvanı yemleyebildim`)
+}
+
+// ---------------------------------------------------------------- savaş
+function findTarget(inst, a) {
+  if (a.kind === 'player') return playerEntity(inst, a.name)
+  return nearestEntity(inst, (e) => e.type !== 'player' && (a.kind === 'hostile' ? inst.isHostile(e) : e.name === a.name), 40)
+}
+
+async function attack(inst, a, { cancelled }) {
+  let killed = 0
+  for (let i = 0; i < a.count && !cancelled(); i++) {
+    const target = findTarget(inst, a)
+    if (!target) break
+    await equipBestWeapon(inst)
+    inst.bot.pvp.attack(target)
+    await new Promise((resolve) => {
+      const done = () => { clearTimeout(to); inst.bot.removeListener('stoppedAttacking', done); resolve() }
+      const to = setTimeout(done, 30000)
+      inst.bot.once('stoppedAttacking', done)
+    })
+    if (!cancelled()) killed++
+  }
+  if (cancelled()) return fail('iptal edildi')
+  return killed === 0 ? fail(`yakında saldıracak ${a.name} bulamadım`) : ok(`${killed} hedefle savaştım`)
+}
+
+async function guard(inst, a, { sender }) {
+  const e = sender && playerEntity(inst, sender)
+  inst.guardPos = (e ? e.position : inst.bot.entity.position).clone()
+  inst.guardRadius = a.radius
+  inst.mode = 'guard'
+  return ok('nöbete başladım')
+}
+
+async function shoot(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const bow = findInv(inst, 'bow')
+  if (!bow) return fail('envanterimde yay yok')
+  if (invCount(inst, 'arrow') === 0) return fail('okum kalmamış')
+  let shots = 0
+  for (let i = 0; i < a.shots && !cancelled(); i++) {
+    if (invCount(inst, 'arrow') === 0) break
+    const t = findTarget(inst, a)
+    if (!t) break
+    const d = t.position.distanceTo(bot.entity.position)
+    if (d > 28) await goTo(inst, new goals.GoalNear(t.position.x, t.position.y, t.position.z, 18))
+    await bot.equip(bow, 'hand')
+    await bot.lookAt(t.position.offset(0, (t.height || 1.6) * 0.9 + d * 0.04, 0))
+    bot.activateItem()
+    await sleep(1100)
+    bot.deactivateItem()
+    shots++
+    await sleep(500)
+  }
+  return shots > 0 ? ok(`${shots} ok attım`) : fail('nişan alacak hedef bulamadım')
+}
+
+// ---------------------------------------------------------------- inşa
+async function place(inst, a) {
+  const res = await placeAt(inst, a.item.name, new Vec3(a.x, a.y, a.z), hintsFor(a.item.name, { facing: worldFacing(inst, a.facing), delay: a.delay }))
+  const map = { ok: `${a.item.name} yerleştirdim`, full: 'orası zaten dolu', noitem: `envanterimde ${a.item.name} yok`, noref: 'yaslanacak komşu blok bulamadım' }
+  return res === 'ok' ? ok(map.ok) : fail(map[res] || 'yerleştiremedim')
+}
+
+async function break_(inst, a) {
+  const pos = new Vec3(a.x, a.y, a.z)
+  const b = inst.bot.blockAt(pos)
+  if (!b || isAir(b)) return fail('orada kırılacak blok yok')
+  await goTo(inst, new goals.GoalLookAtBlock(pos, inst.bot.world))
+  try { await digBlock(inst, inst.bot.blockAt(pos)); return ok(`${b.name} kırdım`) } catch (e) { return fail(e.message) }
+}
+
+function regionPositions(a) {
+  const list = []
+  for (let y = a.minY; y <= a.maxY; y++) {
+    for (let x = a.minX; x <= a.maxX; x++) {
+      for (let z = a.minZ; z <= a.maxZ; z++) {
+        const edgeXZ = x === a.minX || x === a.maxX || z === a.minZ || z === a.maxZ
+        const edgeY = y === a.minY || y === a.maxY
+        if (a.mode === 'hollow' && !(edgeXZ || edgeY)) continue
+        if (a.mode === 'walls' && !edgeXZ) continue
+        if (a.mode === 'floor' && y !== a.minY) continue
+        list.push(new Vec3(x, y, z))
+      }
+    }
+  }
+  return list
+}
+
+async function buildPositions(inst, positions, itemName, cancelled) {
+  const bot = inst.bot
+  const todo = positions.filter((p) => { const b = bot.blockAt(p); return !b || REPLACEABLE.has(b.name) })
+  if (itemName && invCount(inst, itemName) < todo.length) {
+    return fail(`${todo.length} adet ${itemName} lazım, envanterimde ${invCount(inst, itemName)} var`)
+  }
+  let placed = 0
+  let failed = 0
+  for (const p of todo) {
+    if (cancelled()) return fail('iptal edildi')
+    const r = await placeAt(inst, itemName, p)
+    if (r === 'ok') placed++
+    else if (r !== 'full') failed++
+    if (r === 'noitem') break
+  }
+  const msg = `${placed} blok yerleştirdim${failed ? `, ${failed} tanesi olmadı` : ''}`
+  return failed <= Math.max(2, todo.length * 0.2) ? ok(msg) : fail(msg)
+}
+
+async function fill(inst, a, { cancelled }) {
+  const positions = regionPositions(a)
+  if (a.clear) {
+    let dug = 0
+    positions.sort((p, q) => q.y - p.y)
+    for (const p of positions) {
+      if (cancelled()) return fail('iptal edildi')
+      const b = inst.bot.blockAt(p)
+      if (!b || isAir(b) || !b.diggable) continue
+      try {
+        await goTo(inst, new goals.GoalLookAtBlock(p, inst.bot.world))
+        await digBlock(inst, inst.bot.blockAt(p))
+        dug++
+      } catch (e) { if (/uygun aletim yok/.test(e.message)) return fail(`${dug} blok kazdım, sonra: ${e.message}`) }
+    }
+    return ok(`${dug} bloğu temizledim`)
+  }
+  positions.sort((p, q) => p.y - q.y)
+  return buildPositions(inst, positions, a.item.name, cancelled)
+}
+
+async function shelter(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const c = bot.entity.position.floored()
+  let name = a.item && a.item.name
+  if (!name) {
+    const cand = bot.inventory.items().filter((i) => inst.mcData.blocksByName[i.name] && /cobblestone|dirt|planks|stone|deepslate|netherrack|sand|log/.test(i.name))
+      .sort((x, y) => y.count - x.count)[0]
+    if (!cand) return fail('barınak için kullanabileceğim blok yok')
+    name = cand.name
+  }
+  const half = a.size === 'medium' ? 2 : 1
+  const wallH = a.size === 'medium' ? 2 : 2
+  const list = []
+  for (let y = 0; y <= wallH; y++) {
+    for (let x = -half; x <= half; x++) {
+      for (let z = -half; z <= half; z++) {
+        const ring = Math.abs(x) === half || Math.abs(z) === half
+        const roof = y === wallH
+        if (!ring && !roof) continue
+        if (a.size === 'medium' && x === 0 && z === half && y < 2) continue   // kapı boşluğu
+        list.push({ v: new Vec3(c.x + x, c.y + y, c.z + z), d: Math.abs(x) + Math.abs(z), y })
+      }
+    }
+  }
+  list.sort((p, q) => p.y - q.y || q.d - p.d)
+  return buildPositions(inst, list.map((l) => l.v), name, cancelled)
+}
+
+// ---------------------------------------------------------------- envanter
+async function equip(inst, a) {
+  const it = findInv(inst, a.item.name)
+  if (!it) return fail(`envanterimde ${a.item.name} yok`)
+  try { await inst.bot.equip(it, a.slot); return ok(`${a.item.name} kuşandım`) } catch (e) { return fail(`kuşanamadım (${e.message})`) }
+}
+
+async function drop(inst, a) {
+  const have = invCount(inst, a.item.name)
+  if (!have) return fail(`envanterimde ${a.item.name} yok`)
+  const n = a.count === null ? have : Math.min(have, a.count)
+  await inst.bot.toss(a.item.id, null, n)
+  return ok(`${n} adet ${a.item.name} attım`)
+}
+
+async function give(inst, a) {
+  const have = invCount(inst, a.item.name)
+  if (!have) return fail(`envanterimde ${a.item.name} yok`)
+  const e = playerEntity(inst, a.target)
+  if (!e) return fail(`${a.target} çok uzakta`)
+  await goTo(inst, new goals.GoalNear(e.position.x, e.position.y, e.position.z, 2))
+  await inst.bot.lookAt(e.position.offset(0, e.height || 1.6, 0))
+  const n = a.count === null ? have : Math.min(have, a.count)
+  await inst.bot.toss(a.item.id, null, n)
+  return ok(`${a.target} oyuncusuna ${n} adet ${a.item.name} verdim`)
+}
+
+async function placeTable(inst, tableItem) {
+  const bot = inst.bot
+  try { await bot.equip(tableItem, 'hand') } catch (e) { return null }
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const ref = bot.blockAt(bot.entity.position.offset(dx, -1, dz))
+    const above = bot.blockAt(bot.entity.position.offset(dx, 0, dz))
+    if (ref && ref.boundingBox === 'block' && above && isAir(above)) {
+      try { await bot.placeBlock(ref, new Vec3(0, 1, 0)); return bot.blockAt(above.position) } catch (e) { /* diğer yön */ }
+    }
+  }
+  return null
+}
+
+async function craft(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const item = a.item
+  let table = null
+  let recipes = bot.recipesFor(item.id, null, 1, null)
+  if (!recipes.length) {
+    table = bot.findBlock({ matching: inst.mcData.blocksByName.crafting_table.id, maxDistance: 32 })
+    if (!table) {
+      const tableItem = findInv(inst, 'crafting_table')
+      if (tableItem) table = await placeTable(inst, tableItem)
+    }
+    if (table) {
+      await goTo(inst, new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2))
+      recipes = bot.recipesFor(item.id, null, 1, table)
+    }
+  }
+  if (!recipes.length) return fail(`${item.name} için malzemem yok ya da yakında crafting_table yok`)
+  const recipe = recipes[0]
+  const per = (recipe.result && recipe.result.count) || 1
+  const times = Math.max(1, Math.ceil(a.count / per))
+  let made = 0
+  for (let i = 0; i < times && !cancelled(); i++) {
+    try { await bot.craft(recipe, 1, table); made += per } catch (e) { break }
+  }
+  return made > 0 ? ok(`${made} adet ${item.name} ürettim`) : fail(`${item.name} üretemedim, malzeme yetmedi`)
+}
+
+async function smelt(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const input = findInv(inst, a.item.name)
+  if (!input) return fail(`envanterimde ${a.item.name} yok`)
+  let furnace = bot.findBlock({ matching: ['furnace', 'blast_furnace', 'smoker'].map((n) => inst.mcData.blocksByName[n]).filter(Boolean).map((b) => b.id), maxDistance: 32 })
+  if (!furnace) {
+    const fi = findInv(inst, 'furnace')
+    if (!fi) return fail('yakında fırın yok, envanterimde de fırın yok')
+    furnace = await placeTable(inst, fi)
+    if (!furnace) return fail('fırını yere koyamadım')
+  }
+  await goTo(inst, new goals.GoalLookAtBlock(furnace.position, bot.world))
+  const count = Math.min(a.count, input.count)
+  const fuelOrder = ['coal', 'charcoal', 'blaze_rod', 'dried_kelp_block']
+  let fuel = fuelOrder.map((n) => findInv(inst, n)).find(Boolean)
+  let fuelNeed = fuel ? Math.ceil(count / (fuel.name === 'blaze_rod' ? 12 : 8)) : 0
+  if (!fuel) {
+    fuel = bot.inventory.items().find((i) => i.name.endsWith('_planks')) || bot.inventory.items().find((i) => i.name.endsWith('_log') && i.name !== input.name)
+    fuelNeed = fuel ? Math.ceil(count / 1.5) : 0
+  }
+  if (!fuel) return fail('yakıt (kömür/odun) yok')
+  const f = await bot.openFurnace(furnace)
+  let collected = 0
+  try {
+    await f.putFuel(fuel.type, null, Math.min(fuelNeed, fuel.count))
+    await f.putInput(input.type, null, count)
+    const end = Date.now() + count * 11000 + 8000
+    while (!cancelled() && collected < count && Date.now() < end) {
+      await sleep(1000)
+      if (f.outputItem()) { const it = await f.takeOutput(); if (it) collected += it.count }
+    }
+  } finally {
+    try { f.close() } catch (e) { /* kapalı */ }
+  }
+  if (cancelled()) return fail('iptal edildi, fırındakiler pişmeye devam eder')
+  return collected >= count ? ok(`${collected} adet ${a.item.name} pişirdim`) : fail(`${collected}/${count} pişirebildim`)
+}
+
+async function eat(inst) {
+  return (await inst.autoEat(true)) ? ok('yemek yedim') : fail('yiyecek yok ya da zaten tokum')
+}
+
+async function use_item(inst, a) {
+  const bot = inst.bot
+  if (a.item) {
+    const it = findInv(inst, a.item.name)
+    if (!it) return fail(`envanterimde ${a.item.name} yok`)
+    await bot.equip(it, 'hand')
+  }
+  if (!bot.heldItem) return fail('elim boş')
+  const name = bot.heldItem.name
+  if (a.pos) {
+    const pos = new Vec3(a.pos.x, a.pos.y, a.pos.z)
+    await goTo(inst, new goals.GoalNear(pos.x, pos.y, pos.z, 3))
+    const target = bot.blockAt(pos)
+    await bot.lookAt(pos.offset(0.5, 0.5, 0.5))
+    if (target && !isAir(target) && !isLiquid(target)) {
+      try { await bot.activateBlock(target) } catch (e) { return fail(`${name} kullanılamadı (${e.message})`) }
+    } else {
+      bot.activateItem()
+      await sleep(600)
+      try { bot.deactivateItem() } catch (e) { /* önemsiz */ }
+    }
+    return ok(`${name} hedefe kullandım`)
+  }
+  bot.activateItem()
+  await sleep(600)
+  try { bot.deactivateItem() } catch (e) { /* önemsiz */ }
+  return ok(`${name} kullandım`)
+}
+
+async function store(inst, a) {
+  const have = invCount(inst, a.item.name)
+  if (!have) return fail(`envanterimde ${a.item.name} yok`)
+  let c
+  try { c = await openNearestContainer(inst, a) } catch (e) { return fail(e.message) }
+  try {
+    const n = a.count === null ? have : Math.min(have, a.count)
+    await c.deposit(a.item.id, null, n)
+    return ok(`${n} adet ${a.item.name} sandığa koydum`)
+  } catch (e) { return fail(`koyamadım (${e.message})`) } finally { try { c.close() } catch (e) {} }
+}
+
+async function take(inst, a) {
+  let c
+  try { c = await openNearestContainer(inst, a) } catch (e) { return fail(e.message) }
+  try {
+    const inside = c.containerItems().filter((i) => i.type === a.item.id).reduce((s, i) => s + i.count, 0)
+    if (!inside) return fail(`sandıkta ${a.item.name} yok`)
+    const n = a.count === null ? inside : Math.min(inside, a.count)
+    await c.withdraw(a.item.id, null, n)
+    return ok(`sandıktan ${n} adet ${a.item.name} aldım`)
+  } catch (e) { return fail(`alamadım (${e.message})`) } finally { try { c.close() } catch (e) {} }
+}
+
+async function inspect_chest(inst, a) {
+  let c
+  try { c = await openNearestContainer(inst, a) } catch (e) { return fail(e.message) }
+  try {
+    const sum = {}
+    c.containerItems().forEach((i) => { sum[i.name] = (sum[i.name] || 0) + i.count })
+    const text = Object.entries(sum).map(([n, k]) => `${n} x${k}`).join(', ')
+    return ok(text ? `sandıkta: ${text}` : 'sandık boş')
+  } finally { try { c.close() } catch (e) {} }
+}
+
+async function trade(inst, a) {
+  const bot = inst.bot
+  const e = nearestEntity(inst, (x) => x.name === 'villager' || x.name === 'wandering_trader', 32)
+  if (!e) return fail('yakında köylü yok')
+  await goTo(inst, new goals.GoalNear(e.position.x, e.position.y, e.position.z, 2))
+  let v
+  try { v = await bot.openVillager(e) } catch (err) { return fail(`köylüyle konuşamadım (${err.message})`) }
+  try {
+    const idx = v.trades.findIndex((t) => t.outputItem && t.outputItem.name === a.item.name && !t.tradeDisabled)
+    if (idx === -1) {
+      const offers = v.trades.map((t) => t.outputItem && t.outputItem.name).filter(Boolean).slice(0, 8).join(', ')
+      return fail(`köylü ${a.item.name} satmıyor. Sattıkları: ${offers || 'yok'}`)
+    }
+    await bot.trade(v, idx, a.count)
+    return ok(`köylüden ${a.item.name} aldım`)
+  } catch (err) { return fail(`takas olmadı (${err.message})`) } finally { try { v.close() } catch (err) {} }
+}
+
+// ---------------------------------------------------------------- dünya
+async function activate_block(inst, a) {
+  const bot = inst.bot
+  let block
+  if (a.pos) block = bot.blockAt(new Vec3(a.pos.x, a.pos.y, a.pos.z))
+  else block = bot.findBlock({ matching: a.defs.map((d) => d.id), maxDistance: 32 })
+  if (!block) return fail('uygun blok bulamadım')
+  await goTo(inst, new goals.GoalNear(block.position.x, block.position.y, block.position.z, 2))
+  try { await bot.activateBlock(block); return ok(`${block.name} bloğuna sağ tıkladım`) } catch (e) { return fail(`etkileşim olmadı (${e.message})`) }
+}
+
+async function find(inst, a) {
+  const bot = inst.bot
+  const p = bot.entity.position
+  const fmt = (v) => `${Math.floor(v.x)}, ${Math.floor(v.y)}, ${Math.floor(v.z)} (${Math.round(v.distanceTo(p))} blok)`
+  if (a.kind === 'block') {
+    const list = bot.findBlocks({ matching: a.defs.map((d) => d.id), maxDistance: 128, count: 4 })
+    return list.length ? ok(`en yakın ${a.label}: ${list.map(fmt).join(' | ')}`) : fail(`128 blok çevrede ${a.label} görünmüyor`)
+  }
+  if (a.kind === 'player') {
+    const e = playerEntity(inst, a.name)
+    return e ? ok(`${a.name}: ${fmt(e.position)}`) : fail(`${a.name} görüş alanımda değil`)
+  }
+  const list = Object.values(bot.entities).filter((e) => e.name === a.name).sort((x, y) => x.position.distanceTo(p) - y.position.distanceTo(p)).slice(0, 4)
+  return list.length ? ok(`${a.name}: ${list.map((e) => fmt(e.position)).join(' | ')}`) : fail(`yakında ${a.name} yok`)
+}
+
+async function chat(inst, a) {
+  if (a.target) inst.bot.whisper(a.target, a.text)
+  else inst.bot.chat(a.text)
+  inst.log('bot', `[Sohbet] ${a.text}`)
+  return ok('mesaj gönderildi')
+}
+
+async function command(inst, a) {
+  inst.bot.chat(a.text)
+  inst.log('action', `Komut çalıştırıldı: ${a.text}`)
+  await sleep(600)
+  return ok(`${a.text} komutunu gönderdim`)
+}
+
+async function wait(inst, a, { cancelled }) { await waitFor(a.seconds * 1000, cancelled); return ok(`${a.seconds} sn bekledim`) }
+
+
+// ---------------------------------------------------------------- gelişmiş eylemler
+const DOOR_KINDS = { door: /_door$/, trapdoor: /_trapdoor$/, gate: /_fence_gate$/, any: /(_door|_trapdoor|_fence_gate)$/ }
+
+async function door(inst, a) {
+  const bot = inst.bot
+  let block
+  if (a.pos) block = bot.blockAt(new Vec3(a.pos.x, a.pos.y, a.pos.z))
+  else block = bot.findBlock({ matching: (b) => DOOR_KINDS[a.kind].test(b.name) && !b.name.startsWith('iron_'), maxDistance: 16 })
+  if (!block || !DOOR_KINDS.any.test(block.name)) return fail('yakında uygun kapı / tuzak kapı / çit kapısı yok')
+  if (block.name.startsWith('iron_')) return fail('demir kapılar elle açılmaz (redstone gerekir)')
+  await goTo(inst, new goals.GoalNear(block.position.x, block.position.y, block.position.z, 2))
+  let isOpen = null
+  try { const p = block.getProperties(); if (p && p.open !== undefined) isOpen = p.open === true || p.open === 'true' } catch (e) { /* eski sürüm */ }
+  if (a.open !== null && isOpen !== null && isOpen === a.open) return ok(`${block.name} zaten ${a.open ? 'açık' : 'kapalı'}`)
+  try { await bot.activateBlock(block) } catch (e) { return fail(`kapıyla etkileşim olmadı (${e.message})`) }
+  return ok(`${block.name} ${a.open === null ? 'durumu değiştirildi' : a.open ? 'açıldı' : 'kapatıldı'}`)
+}
+
+async function enchant(inst, a) {
+  const bot = inst.bot
+  const tableDef = inst.mcData.blocksByName.enchanting_table
+  const table = tableDef && bot.findBlock({ matching: tableDef.id, maxDistance: 32 })
+  if (!table) return fail('yakında büyü masası (enchanting_table) yok')
+  if (!findInv(inst, a.item.name)) return fail(`envanterimde ${a.item.name} yok`)
+  if (!findInv(inst, 'lapis_lazuli')) return fail('lapis lazuli yok')
+  await goTo(inst, new goals.GoalLookAtBlock(table.position, bot.world))
+  let t
+  try { t = await bot.openEnchantmentTable(table) } catch (e) { return fail(`büyü masası açılmadı (${e.message})`) }
+  try {
+    await t.putTargetItem(findInv(inst, a.item.name))
+    const lapis = findInv(inst, 'lapis_lazuli')
+    const lapisHave = lapis.count
+    await t.putLapis(lapis)
+    for (let i = 0; i < 24 && !(t.enchantments || []).some((e) => e && e.level > 0); i++) await sleep(250)
+    const opts = (t.enchantments || []).map((e, i) => ({ i, level: e ? e.level : 0 })).filter((o) => o.level > 0)
+    if (!opts.length) return fail('büyü seçenekleri açılmadı (eşya büyülenemez ya da zaten büyülü olabilir)')
+    const xp = bot.experience ? bot.experience.level : 0
+    const affordable = opts.filter((o) => o.level <= xp && o.i + 1 <= lapisHave)
+    let pick
+    if (a.choice === 'best') pick = affordable.sort((x, y) => y.level - x.level)[0]
+    else pick = affordable.find((o) => o.i === a.choice - 1)
+    if (!pick) return fail(`yetmiyor: XP seviyem ${xp}, seçenekler (seviye ücreti): ${opts.map((o) => o.level).join('/')}, lapis: ${lapisHave}`)
+    await t.enchant(pick.i)
+    try { await t.takeTargetItem() } catch (e) { /* pencere kapanınca geri döner */ }
+    return ok(`${a.item.name} eşyasını ${pick.level}. seviye ücretiyle büyüledim`)
+  } catch (e) {
+    return fail(`büyüleyemedim (${e.message})`)
+  } finally { try { t.close() } catch (e) { /* kapalı */ } }
+}
+
+async function anvil(inst, a) {
+  const bot = inst.bot
+  const ids = ['anvil', 'chipped_anvil', 'damaged_anvil'].map((n) => inst.mcData.blocksByName[n]).filter(Boolean).map((b) => b.id)
+  const block = bot.findBlock({ matching: ids, maxDistance: 32 })
+  if (!block) return fail('yakında örs yok')
+  const first = findInv(inst, a.item.name)
+  if (!first) return fail(`envanterimde ${a.item.name} yok`)
+  const second = a.with ? findInv(inst, a.with.name) : null
+  if (a.with && !second) return fail(`envanterimde ${a.with.name} yok`)
+  await goTo(inst, new goals.GoalLookAtBlock(block.position, bot.world))
+  let w
+  try { w = await bot.openAnvil(block) } catch (e) { return fail(`örs açılmadı (${e.message})`) }
+  try {
+    if (second) await w.combine(first, second, a.name)
+    else await w.rename(first, a.name)
+    return ok(second ? `${a.item.name} ile ${a.with.name} birleştirildi` : `${a.item.name} yeniden adlandırıldı`)
+  } catch (e) {
+    return fail(`örs işlemi olmadı (${e.message}) - XP yetmiyor olabilir`)
+  } finally { try { w.close() } catch (e) { /* kapalı */ } }
+}
+
+async function fill_bottles(inst, a, { cancelled }) {
+  const bot = inst.bot
+  if (!findInv(inst, 'glass_bottle')) return fail('envanterimde cam şişe yok')
+  const water = bot.findBlock({ matching: inst.mcData.blocksByName.water.id, maxDistance: 32 })
+  if (!water) return fail('yakında su yok')
+  await goTo(inst, new goals.GoalNear(water.position.x, water.position.y, water.position.z, 3))
+  const before = invCount(inst, 'potion')
+  for (let i = 0; i < a.count && !cancelled(); i++) {
+    const bottle = findInv(inst, 'glass_bottle')
+    if (!bottle) break
+    await bot.equip(bottle, 'hand')
+    await bot.lookAt(water.position.offset(0.5, 0.9, 0.5))
+    bot.activateItem()
+    await sleep(600)
+  }
+  const got = invCount(inst, 'potion') - before
+  return got > 0 ? ok(`${got} şişeyi suyla doldurdum`) : fail('şişeleri dolduramadım (suya bakamamış olabilirim)')
+}
+
+// Eşyanın iksir türünü NBT/bileşenlerden tahmin et (sürüme göre değişir, en iyi çaba)
+function potionText(item) {
+  try { return JSON.stringify({ n: item.nbt, c: item.components }).toLowerCase() } catch (e) { return '' }
+}
+
+async function drink(inst, a) {
+  const bot = inst.bot
+  const cands = bot.inventory.items().filter((i) => i.name === 'potion')
+  if (!cands.length) return fail('envanterimde içilebilir iksir yok')
+  const it = (a.potion && cands.find((i) => potionText(i).includes(a.potion))) || (a.potion ? null : cands[0])
+  if (!it) return fail(`"${a.potion}" türünde iksir bulamadım (${cands.length} iksirim var)`)
+  try { await bot.equip(it, 'hand'); await bot.consume(); return ok('iksiri içtim') } catch (e) { return fail(`içemedim (${e.message})`) }
+}
+
+async function brew(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const standDef = inst.mcData.blocksByName.brewing_stand
+  if (!standDef) return fail('bu sürümde simya sehpası yok')
+  let stand = bot.findBlock({ matching: standDef.id, maxDistance: 32 })
+  if (!stand) {
+    const it = findInv(inst, 'brewing_stand')
+    if (!it) return fail('yakında simya sehpası yok')
+    stand = await placeTable(inst, it)
+    if (!stand) return fail('simya sehpasını yere koyamadım')
+  }
+  if (!findInv(inst, a.item.name)) return fail(`envanterimde ${a.item.name} yok`)
+  if (!invCount(inst, 'potion')) return fail('envanterimde şişe (potion / su şişesi) yok')
+  await goTo(inst, new goals.GoalLookAtBlock(stand.position, bot.world))
+  let w
+  try { w = await bot.openBlock(stand) } catch (e) { return fail(`simya sehpası açılmadı (${e.message})`) }
+  try {
+    const invStart = w.inventoryStart
+    const srcSlot = (name) => w.slots.findIndex((s, i) => i >= invStart && s && s.name === name)
+    // Yakıt (1.9+)
+    if (invStart >= 5 && !w.slots[4]) {
+      const s = srcSlot('blaze_powder')
+      if (s === -1) return fail('sehpada yakıt yok ve envanterimde blaze_powder yok')
+      await bot.clickWindow(s, 0, 0); await bot.clickWindow(4, 0, 0)
+    }
+    // Malzeme
+    if (w.slots[3] && w.slots[3].name !== a.item.name) return fail('sehpanın malzeme yuvasında başka bir şey var')
+    if (!w.slots[3]) {
+      const s = srcSlot(a.item.name)
+      if (s === -1) return fail(`${a.item.name} bulunamadı`)
+      await bot.clickWindow(s, 0, 0); await bot.clickWindow(3, 0, 0)
+    }
+    // Şişeler (iksirler 1'lik yığındır)
+    let placed = 0
+    for (let i = 0; i < 3 && placed < a.count; i++) {
+      if (w.slots[i]) { placed++; continue }
+      const s = srcSlot('potion')
+      if (s === -1) break
+      await bot.clickWindow(s, 0, 0); await bot.clickWindow(i, 0, 0)
+      placed++
+    }
+    if (!placed) return fail('sehpaya şişe koyamadım')
+    const before = w.slots[3] ? w.slots[3].count : 0
+    const end = Date.now() + 40000
+    let done = false
+    while (!cancelled() && Date.now() < end) {
+      await sleep(1000)
+      const cur = w.slots[3]
+      if (!cur || cur.count < before) { done = true; break }
+    }
+    if (!done) return fail('demleme tamamlanmadı (yanlış malzeme, yakıt yok ya da şişeler uygun değil)')
+    let taken = 0
+    for (let i = 0; i < 3; i++) if (w.slots[i]) { await bot.clickWindow(i, 0, 1); taken++ }
+    if (w.slots[3]) await bot.clickWindow(3, 0, 1)
+    return ok(`${taken} iksir demledim (${a.item.name})`)
+  } catch (e) {
+    return fail(`demleme hatası (${e.message})`)
+  } finally { try { w.close() } catch (e) { /* kapalı */ } }
+}
+
+async function nether_portal(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const obs = invCount(inst, 'obsidian')
+  if (obs < 12) return fail(`portal için en az 12 obsidyen lazım, envanterimde ${obs} var`)
+  const lighter = findInv(inst, 'flint_and_steel') || findInv(inst, 'fire_charge')
+  if (!lighter) return fail('envanterimde çakmak (flint_and_steel) yok')
+  const c = bot.entity.position.floored()
+  const [fx, fz] = yawDir(bot.entity.yaw)
+  const rx = -fz
+  const rz = fx
+  const O = c.offset(fx * 3, 0, fz * 3)
+  const at = (w, y) => O.offset(rx * w, y, rz * w)
+  // iç alanı temizle
+  for (let y = 1; y <= 3; y++) {
+    for (const w of [1, 2]) {
+      const b = bot.blockAt(at(w, y))
+      if (b && !isAir(b) && !isLiquid(b) && b.diggable) {
+        try { await goTo(inst, new goals.GoalLookAtBlock(b.position, bot.world)); await digBlock(inst, b) } catch (e) { return fail(`portal alanını temizleyemedim (${e.message})`) }
+      }
+    }
+  }
+  const list = []
+  for (const w of [1, 2]) list.push(at(w, 0))
+  for (let y = 1; y <= 3; y++) { list.push(at(0, y)); list.push(at(3, y)) }
+  for (let w = 0; w <= 3; w++) list.push(at(w, 4))
+  const built = await buildPositions(inst, list, 'obsidian', cancelled)
+  if (!built.ok) return fail(`çerçeve kurulamadı: ${built.msg}`)
+  const base = bot.blockAt(at(1, 0))
+  await goTo(inst, new goals.GoalNear(at(1, 0).x, at(1, 0).y, at(1, 0).z, 3))
+  await bot.equip(lighter, 'hand')
+  await bot.lookAt(at(1, 0).offset(0.5, 1, 0.5))
+  try { await bot.activateBlock(base, new Vec3(0, 1, 0)) } catch (e) { return fail(`portal yakılamadı (${e.message})`) }
+  await sleep(1500)
+  const inside = bot.blockAt(at(1, 1))
+  if (!inside || inside.name !== 'nether_portal') return fail('çerçeve kuruldu ama portal yanmadı')
+  if (!a.enter) return ok('Nether portalı kurdum ve yaktım')
+  const startDim = bot.game.dimension
+  await goTo(inst, new goals.GoalBlock(at(1, 1).x, at(1, 1).y, at(1, 1).z))
+  for (let i = 0; i < 60 && !cancelled() && bot.game.dimension === startDim; i++) await sleep(250)
+  return bot.game.dimension !== startDim ? ok(`portaldan geçtim, şu an: ${bot.game.dimension}`) : ok('portal yandı, içine girdim ama boyut değişmedi (biraz beklemek gerekebilir)')
+}
+
+async function runBuild(inst, list, offset, cancelled) {
+  const bot = inst.bot
+  const c = bot.entity.position.floored()
+  const [fx, fz] = yawDir(bot.entity.yaw)
+  const rx = -fz
+  const rz = fx
+  const O = c.offset(fx * offset, 0, fz * offset)
+  const feet = c
+  const head = c.offset(0, 1, 0)
+  const entries = list
+    .map((e) => ({ pos: O.offset(rx * e.x + fx * e.z, e.y, rz * e.x + fz * e.z), name: e.item.name, facing: worldFacing(inst, e.facing), delay: e.delay }))
+    .filter((e) => !e.pos.equals(feet) && !e.pos.equals(head))
+  const todo = entries.filter((e) => { const b = bot.blockAt(e.pos); return !b || (b.name !== e.name && REPLACEABLE.has(b.name)) })
+  // malzeme kontrolü
+  const need = {}
+  todo.forEach((e) => { need[e.name] = (need[e.name] || 0) + 1 })
+  const missing = Object.entries(need).filter(([n, k]) => invCount(inst, n) < k).map(([n, k]) => `${n}: ${k} lazım, ${invCount(inst, n)} var`)
+  if (missing.length) return fail(`malzeme yetersiz -> ${missing.join('; ')}`)
+  todo.sort((p, q) => p.pos.y - q.pos.y || p.pos.distanceTo(O) - q.pos.distanceTo(O))
+  let placed = 0
+  let failed = 0
+  for (const e of todo) {
+    if (cancelled()) return fail('iptal edildi')
+    const r = await placeAt(inst, e.name, e.pos, hintsFor(e.name, { facing: e.facing, delay: e.delay }))
+    if (r === 'ok') placed++
+    else if (r !== 'full') failed++
+  }
+  const msg = `${placed}/${todo.length} blok yerleştirdim${failed ? `, ${failed} tanesi olmadı (yaslanacak blok yok olabilir)` : ''}`
+  return failed <= Math.max(3, todo.length * 0.15) ? ok(msg) : fail(msg)
+}
+
+async function build(inst, a, { cancelled }) { return runBuild(inst, a.list, a.offset, cancelled) }
+
+async function write_sign(inst, a) {
+  const bot = inst.bot
+  const block = a.pos ? bot.blockAt(new Vec3(a.pos.x, a.pos.y, a.pos.z))
+    : bot.findBlock({ matching: (b) => /_sign$/.test(b.name), maxDistance: 8 })
+  if (!block || !/_sign$/.test(block.name)) return fail('yakında tabela yok (önce place ile bir tabela yerleştir)')
+  try { await bot.updateSign(block, a.text); return ok('tabelaya yazdım') } catch (e) { return fail(`tabelaya yazamadım (${e.message})`) }
+}
+
+
+// ---------------------------------------------------------------- şematik, arama, PvP, tarla, ev
+const sleepMs = sleep
+
+function schematicOrigin(inst, s, a) {
+  if (a.pos) return { x: a.pos.x, y: a.pos.y, z: a.pos.z }
+  const c = inst.bot.entity.position.floored()
+  const [fx, fz] = yawDir(inst.bot.entity.yaw)
+  let x
+  let z
+  if (fx > 0) { x = c.x + a.offset; z = c.z - Math.floor(s.size.z / 2) }
+  else if (fx < 0) { x = c.x - a.offset - s.size.x + 1; z = c.z - Math.floor(s.size.z / 2) }
+  else if (fz > 0) { z = c.z + a.offset; x = c.x - Math.floor(s.size.x / 2) }
+  else { z = c.z - a.offset - s.size.z + 1; x = c.x - Math.floor(s.size.x / 2) }
+  return { x, y: c.y + a.dy, z }
+}
+
+async function schematic(inst, a, { cancelled }) {
+  const bot = inst.bot
+  let s
+  try { s = await Sch.load(a.file) } catch (e) { return fail(e.message) }
+  s = Sch.rotate(s, a.rotate)
+  const origin = schematicOrigin(inst, s, a)
+  inst.log('info', `Şematik: ${s.file} (${s.size.x}x${s.size.y}x${s.size.z}, ${s.blocks.length} blok) -> başlangıç ${origin.x}, ${origin.y}, ${origin.z}, mod: ${a.mode}`)
+  await goTo(inst, new goals.GoalNear(origin.x + Math.floor(s.size.x / 2), origin.y, origin.z + Math.floor(s.size.z / 2), Math.max(6, Math.max(s.size.x, s.size.z))))
+
+  if (a.mode === 'command') {
+    if (!inst.mcData.isNewerOrEqualTo('1.13')) return fail('komut modu 1.13 ve üstü sürümleri destekler')
+    const cmds = []
+    if (a.withAir) cmds.push(...Sch.clearCommands(origin, s.size))
+    cmds.push(...Sch.compileCommands(s.blocks, origin))
+    for (let i = 0; i < cmds.length; i++) {
+      if (cancelled()) return fail(`iptal edildi (${i}/${cmds.length} komut gönderildi)`)
+      bot.chat(cmds[i])
+      if (i % 50 === 0) inst.log('action', `şematik komutları: ${i}/${cmds.length}`)
+      await sleep(a.delayMs)
+    }
+    return ok(`${cmds.length} komut gönderdim (${s.blocks.length} blok). Sunucu bir komutu reddettiyse sohbette hata görünür; OP olmam gerekir`)
+  }
+
+  // yerleştirme modu (hayatta kalma: envanterdeki bloklarla)
+  const d = Sch.describe(s, inst.mcData, (item) => invCount(inst, item))
+  if (d.missing.length && !a.partial) {
+    return fail(`malzeme eksik, kurmadım -> ${d.missing.slice(0, 10).map((m) => `${m.item} (${m.have}/${m.need})`).join(', ')}. Eksik olanla devam etmemi istersen partial:true diyebilirsin`)
+  }
+  const todo = []
+  let skippedKinds = 0
+  for (const b of s.blocks) {
+    const it = Sch.blockToItem(b, inst.mcData)
+    if (!it || it.unknown) { skippedKinds++; continue }
+    if (b.props && b.props.type === 'double') { skippedKinds++; continue }   // çift slab yerleştirme modunda desteklenmez
+    const pos = new Vec3(origin.x + b.x, origin.y + b.y, origin.z + b.z)
+    const cur = bot.blockAt(pos)
+    if (cur && cur.name === b.name) continue                                   // zaten var (kaldığı yerden devam)
+    todo.push({ pos, item: it.item, hints: hintsFor(b.name, b.props) })
+  }
+  let placed = 0
+  let failed = 0
+  let noitem = 0
+  for (let i = 0; i < todo.length; i++) {
+    if (cancelled()) return fail(`iptal edildi (${placed}/${todo.length} blok koydum; tekrar çalıştırırsan kaldığı yerden devam eder)`)
+    const e = todo[i]
+    const r = await placeAt(inst, e.item, e.pos, e.hints)
+    if (r === 'ok') placed++
+    else if (r === 'noitem') noitem++
+    else if (r !== 'full') failed++
+    if (i % 40 === 0) inst.log('action', `şematik: ${i}/${todo.length}`)
+  }
+  const msg = `${placed}/${todo.length} blok koydum${failed ? `, ${failed} tanesi olmadı (yaslanacak blok yok)` : ''}${noitem ? `, ${noitem} tanesinde malzeme bitti` : ''}${skippedKinds ? `, ${skippedKinds} blok türü desteklenmediği için atlandı` : ''}`
+  return failed + noitem <= Math.max(3, todo.length * 0.15) ? ok(msg) : fail(`${msg}. Aynı komutu tekrar vererek kalanı tamamlatabilirsin`)
+}
+
+async function schematic_info(inst, a) {
+  let s
+  try { s = await Sch.load(a.file) } catch (e) { return fail(e.message) }
+  return ok(Sch.describe(s, inst.mcData, (item) => invCount(inst, item)).text.slice(0, 900))
+}
+
+async function list_schematics() {
+  const files = Sch.listFiles()
+  return files.length ? ok(`şematikler: ${files.map((f) => `${f.name} (${Math.round(f.size / 1024)} KB)`).join(', ')}`) : fail('schematics klasörü boş (panelden dosya yükle)')
+}
+
+async function download_schematic(inst, a) {
+  const ctrl = new AbortController()
+  const timer = setTimeout(() => ctrl.abort(), 45000)
+  try {
+    const res = await fetch(a.url, { signal: ctrl.signal, redirect: 'follow', headers: { 'user-agent': 'MinecraftAIBot/3.0' } })
+    if (!res.ok) return fail(`indirilemedi (HTTP ${res.status})`)
+    const len = Number(res.headers.get('content-length') || 0)
+    if (len > Sch.MAX_FILE_BYTES) return fail('dosya 20 MB sınırını aşıyor')
+    const buf = Buffer.from(await res.arrayBuffer())
+    if (buf.length > Sch.MAX_FILE_BYTES) return fail('dosya 20 MB sınırını aşıyor')
+    const name = Sch.saveFile(a.name, buf)
+    try { await Sch.load(name) } catch (e) { Sch.deleteFile(name); return fail(`indirilen dosya geçerli bir şematik değil: ${e.message}`) }
+    return ok(`${name} indirildi (${Math.round(buf.length / 1024)} KB)`)
+  } catch (e) {
+    return fail(`indirme hatası: ${e.message}`)
+  } finally { clearTimeout(timer) }
+}
+
+async function web_search(inst, a) {
+  try {
+    const r = await search.webSearch(a.query, { groqKey: inst.cfg.groqKey, searchModel: inst.cfg.searchModel })
+    if (inst.learn) inst.learn(a.query, r.text)
+    inst.log('ai', `Arama (${r.source}): ${r.text.slice(0, 500).replace(/\s+/g, ' ')}...`)
+    return { ok: true, msg: `"${a.query}" için araştırma tamamlandı (${r.source})`, data: r.text.slice(0, 3000) }
+  } catch (e) { return fail(e.message) }
+}
+
+// ---- kristal PvP (deneysel, basit sezgisel)
+async function crystal_pvp(inst, a, { cancelled }) {
+  const bot = inst.bot
+  if (!inst.cfg.allowPvp) return fail('oyunculara saldırı kapalı')
+  if (!findInv(inst, 'end_crystal')) return fail('envanterimde end_crystal yok')
+  if (!playerEntity(inst, a.target)) return fail(`${a.target} görüş alanımda değil`)
+  const baseIds = ['obsidian', 'bedrock'].map((n) => inst.mcData.blocksByName[n]).filter(Boolean).map((b) => b.id)
+  if (inst.autoArmor) await inst.autoArmor().catch(() => {})
+  let dead = false
+  const onDead = (e) => { if (e && e.username === a.target) dead = true }
+  bot.on('entityDead', onDead)
+  const stats = { placed: 0, hit: 0, melee: 0, obs: 0 }
+  const last = { place: 0, hit: 0, melee: 0, obs: 0 }
+  const end = Date.now() + a.seconds * 1000
+  let lost = 0
+  let followed = null
+  try {
+    while (!cancelled() && !dead && Date.now() < end) {
+      const te = playerEntity(inst, a.target)
+      if (!te) { if (++lost > 40) break; await sleep(150); continue }
+      lost = 0
+      if (followed !== te) { bot.pathfinder.setGoal(new goals.GoalFollow(te, 3), true); followed = te }
+      const off = bot.inventory.slots[45]
+      const totem = findInv(inst, 'totem_of_undying')
+      if (totem && (!off || off.name !== 'totem_of_undying')) { try { await bot.equip(totem, 'off-hand') } catch (e) { /* sürüm */ } }
+      if (bot.health <= 9 && !inst.eating) {
+        const ap = findInv(inst, 'enchanted_golden_apple') || findInv(inst, 'golden_apple')
+        if (ap) { inst.eating = true; try { await bot.equip(ap, 'hand'); await bot.consume() } catch (e) { /* kesildi */ } inst.eating = false; continue }
+      }
+      const me = bot.entity.position
+      const tp = te.position
+      const crystals = Object.values(bot.entities).filter((e) => e.name === 'end_crystal' && e.position.distanceTo(me) <= 7)
+      const hit = crystal.pickCrystalToBreak(crystals.map((e) => ({ id: e.id, position: e.position, entity: e })), tp, me, bot.health)
+      if (hit && Date.now() - last.hit > 110) {
+        await bot.lookAt(hit.position.offset(0, 0.5, 0), true)
+        bot.attack(hit.entity)
+        last.hit = Date.now(); stats.hit++
+        await sleep(50)
+        continue
+      }
+      if (Date.now() - last.place > 220) {
+        const cand = bot.findBlocks({ matching: baseIds, maxDistance: 5, count: 80 })
+          .filter((p) => isAir(bot.blockAt(p.offset(0, 1, 0))) && isAir(bot.blockAt(p.offset(0, 2, 0))))
+          .filter((p) => !crystals.some((e) => Math.abs(e.position.x - (p.x + 0.5)) < 0.7 && Math.abs(e.position.z - (p.z + 0.5)) < 0.7 && Math.abs(e.position.y - (p.y + 1)) < 1.5))
+        const base = crystal.pickCrystalBase(cand.map((p) => ({ x: p.x, y: p.y, z: p.z })), tp, me)
+        const cr = findInv(inst, 'end_crystal')
+        if (base && cr) {
+          try {
+            const block = bot.blockAt(new Vec3(base.x, base.y, base.z))
+            await bot.equip(cr, 'hand')
+            await bot.lookAt(block.position.offset(0.5, 1, 0.5), true)
+            await bot.activateBlock(block, new Vec3(0, 1, 0))
+            stats.placed++
+          } catch (e) { /* tekrar dener */ }
+          last.place = Date.now()
+          continue
+        }
+        // taban yoksa hedefin yanına obsidyen koy
+        if (!base && findInv(inst, 'obsidian') && Date.now() - last.obs > 700 && me.distanceTo(tp) < 6) {
+          last.obs = Date.now()
+          const tf = tp.floored()
+          for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const pos = tf.offset(dx, 0, dz)
+            if (isAir(bot.blockAt(pos)) && !isAir(bot.blockAt(pos.offset(0, -1, 0))) && me.distanceTo(pos) > 1.8) {
+              if ((await placeAt(inst, 'obsidian', pos)) === 'ok') { stats.obs++; break }
+            }
+          }
+        }
+        last.place = Date.now()
+      }
+      if (me.distanceTo(tp) < 3.4 && Date.now() - last.melee > 550) {
+        await equipBestWeapon(inst)
+        await bot.lookAt(tp.offset(0, (te.height || 1.8) * 0.9, 0), true)
+        bot.attack(te)
+        last.melee = Date.now(); stats.melee++
+      }
+      await sleep(60)
+    }
+  } finally {
+    bot.removeListener('entityDead', onDead)
+    try { bot.pathfinder.stop() } catch (e) { /* kapalı */ }
+  }
+  if (cancelled()) return fail('iptal edildi')
+  const summary = `${stats.placed} kristal koydum, ${stats.hit} kez kristale vurdum, ${stats.melee} yakın vuruş, ${stats.obs} obsidyen`
+  return dead ? ok(`${a.target} öldü. ${summary}`) : ok(`süre/bağlantı bitti. ${summary}`)
+}
+
+// ---- 9x9 (yarıçap R) çalışan tarla: ortada su, çevresi çapalanmış ve ekilmiş
+async function make_farm(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const seedName = { wheat: 'wheat_seeds', carrots: 'carrot', potatoes: 'potato', beetroots: 'beetroot_seeds' }[a.crop]
+  const hoe = bot.inventory.items().find((i) => i.name.endsWith('_hoe'))
+  if (!hoe) return fail('envanterimde çapa (hoe) yok')
+  const bucket = findInv(inst, 'water_bucket')
+  if (!bucket) return fail('envanterimde su kovası (water_bucket) yok')
+  const R = a.radius
+  const cells = (R * 2 + 1) ** 2 - 1
+  if (invCount(inst, seedName) < cells) return fail(`${cells} adet ${seedName} lazım, envanterimde ${invCount(inst, seedName)} var`)
+  const c = bot.entity.position.floored()
+  const [fx, fz] = yawDir(bot.entity.yaw)
+  const center = c.offset(fx * (a.offset + R), -1, fz * (a.offset + R))     // merkez zemin bloğu
+  const ground = []
+  for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) if (dx || dz) ground.push(center.offset(dx, 0, dz))
+  const okGround = new Set(['dirt', 'grass_block', 'farmland', 'coarse_dirt', 'rooted_dirt', 'podzol', 'mycelium'])
+  const bad = ground.filter((p) => { const b = bot.blockAt(p); return !b || !okGround.has(b.name) }).length
+  if (bad > cells * 0.2) return fail(`alanın ${bad}/${cells} zemini toprak/çimen değil, düz bir yer seç`)
+  const near = async (p, r = 3) => { if (bot.entity.position.offset(0, 1.62, 0).distanceTo(p.offset(0.5, 1, 0.5)) > 4.2) await goTo(inst, new goals.GoalNear(p.x, p.y + 1, p.z, r)) }
+
+  // 1) üstteki bitkileri temizle
+  for (const p of ground) {
+    if (cancelled()) return fail('iptal edildi')
+    const up = bot.blockAt(p.offset(0, 1, 0))
+    if (up && !isAir(up) && up.diggable && !isLiquid(up)) { await near(p); try { await digBlock(inst, up) } catch (e) { /* atla */ } }
+  }
+  // 2) ortadaki bloğu kaz, suyu koy
+  await near(center, 2)
+  const cb = bot.blockAt(center)
+  if (cb && !isAir(cb)) { try { await digBlock(inst, cb) } catch (e) { return fail(`merkez kazılamadı: ${e.message}`) } }
+  await bot.equip(bucket, 'hand')
+  await bot.lookAt(center.offset(0.5, 0, 0.5), true)
+  bot.activateItem()
+  await sleep(700)
+  // 3) çapala
+  await bot.equip(hoe, 'hand')
+  let tilled = 0
+  for (const p of ground) {
+    if (cancelled()) return fail('iptal edildi')
+    const b = bot.blockAt(p)
+    if (!b || b.name === 'farmland') { if (b) tilled++; continue }
+    await near(p)
+    try { await bot.equip(hoe, 'hand'); await bot.activateBlock(b); await sleep(60); tilled++ } catch (e) { /* atla */ }
+  }
+  // 4) ek
+  let planted = 0
+  for (const p of ground) {
+    if (cancelled()) return fail('iptal edildi')
+    const b = bot.blockAt(p)
+    if (!b || b.name !== 'farmland' || !isAir(bot.blockAt(p.offset(0, 1, 0)))) continue
+    const seed = findInv(inst, seedName)
+    if (!seed) break
+    await near(p)
+    try { await bot.equip(seed, 'hand'); await bot.placeBlock(b, new Vec3(0, 1, 0)); planted++ } catch (e) { /* atla */ }
+  }
+  const waterOk = (bot.blockAt(center) || {}).name === 'water'
+  return planted > 0
+    ? ok(`${tilled} tarla çapaladım, ${planted} ${a.crop} ektim${waterOk ? ', ortada su var' : ', UYARI: ortadaki su yerleşmemiş olabilir'}`)
+    : fail(`ekim yapamadım (${tilled} blok çapalandı). Zemin/menzil sorunu olabilir`)
+}
+
+// ---- parametrik ev
+function houseEntries(a, mcData) {
+  const [W, D, H] = { small: [5, 5, 3], medium: [7, 7, 4], large: [9, 9, 4] }[a.size]
+  const x0 = -Math.floor(W / 2)
+  const x1 = x0 + W - 1
+  const z1 = D - 1
+  const E = []
+  const add = (x, y, z, item, extra = {}) => E.push({ x, y, z, item, ...extra })
+  for (let x = x0; x <= x1; x++) for (let z = 0; z <= z1; z++) add(x, 0, z, a.floor)
+  for (let y = 1; y <= H; y++) {
+    for (let x = x0; x <= x1; x++) {
+      for (let z = 0; z <= z1; z++) {
+        if (!(x === x0 || x === x1 || z === 0 || z === z1)) continue
+        if (x === 0 && z === 0) { if (y === 1) add(x, y, z, a.door, { facing: 'forward' }); continue }   // kapı (üst yarısı otomatik)
+        const window = y === 2 && ((z === Math.floor(D / 2) && (x === x0 || x === x1)) || (z === z1 && x === 0)) && H >= 3
+        add(x, y, z, window ? a.glass : a.wall)
+      }
+    }
+  }
+  for (let x = x0; x <= x1; x++) for (let z = 0; z <= z1; z++) add(x, H + 1, z, a.roof)
+  const torch = mcData.itemsByName.torch
+  if (torch) { add(x1 - 1, 1, z1 - 1, torch); add(x0 + 1, 1, z1 - 1, torch) }
+  return E
+}
+
+async function house(inst, a, { cancelled }) { return runBuild(inst, houseEntries(a, inst.mcData), a.offset, cancelled) }
+
+const EXEC = {
+  stop, follow, goto_player, goto: goto_, goto_block, wander, look_at, jump, sneak, set_home, go_home,
+  mount, dismount, sleep: sleep_, wake, collect, pickup, tunnel, dig_down, farm, fish, shear, breed,
+  attack, guard, shoot, place, break: break_, fill, shelter, equip, drop, give, craft, smelt, eat,
+  use_item, store, take, inspect_chest, trade, activate_block, find, chat, command, wait,
+  door, enchant, anvil, fill_bottles, brew, drink, nether_portal, build, write_sign,
+  schematic, schematic_info, list_schematics, download_schematic, web_search, crystal_pvp, make_farm, house,
+}
+
+async function execute(inst, action, ctx) {
+  const fn = EXEC[action.type]
+  if (!fn) return fail('bilinmeyen eylem')
+  return fn(inst, action, ctx)
+}
+
+module.exports = { execute, equipBestWeapon, EXEC, hintsFor, worldFacing, houseEntries }

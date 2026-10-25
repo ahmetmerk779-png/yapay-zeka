@@ -1,6 +1,6 @@
 'use strict'
 // Web panel sunucusu: statik sayfa + WebSocket ile bot yönetimi.
-// Varsayılan olarak sadece bu bilgisayardan erişilir (127.0.0.1).
+// Render uyumlu hale getirilmiştir.
 
 const http = require('http')
 const fs = require('fs')
@@ -10,8 +10,10 @@ const { BotInstance } = require('./src/bot-instance')
 const ai = require('./src/ai')
 const Sch = require('./src/schematic')
 
-const PORT = parseInt(process.env.PANEL_PORT || '3000')
-const HOST = process.env.PANEL_HOST || '127.0.0.1'
+// Render'ın atadığı PORT ve HOST değerlerini öncelikli olacak şekilde güncelledik[cite: 1]
+const PORT = parseInt(process.env.PORT || process.env.PANEL_PORT || '3000')
+const HOST = process.env.HOST || process.env.PANEL_HOST || '0.0.0.0'
+
 const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'
 const ENV_KEY = process.env.GROQ_API_KEY || ''
 

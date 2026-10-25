@@ -1,0 +1,421 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Minecraft AI Bot Paneli</title>
+<style>
+  :root {
+    --bg: #0f1115; --panel: #171a21; --panel2: #1e222b; --line: #2a2f3a; --text: #e6e8ee; --dim: #8b92a3;
+    --green: #4ade80; --red: #f87171; --yellow: #facc15; --blue: #60a5fa; --purple: #c084fc; --cyan: #22d3ee;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  .app { display: grid; grid-template-columns: 340px 1fr; height: 100vh; }
+  aside { background: var(--panel); border-right: 1px solid var(--line); overflow-y: auto; padding: 14px; }
+  main { display: flex; flex-direction: column; min-width: 0; height: 100vh; }
+  h1 { font-size: 16px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em; color: var(--dim); margin: 18px 0 8px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 8px 0 3px; }
+  input, select, button, textarea { font: inherit; color: var(--text); }
+  input[type=text], input[type=password], input[type=number], select {
+    width: 100%; background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 9px; outline: none;
+  }
+  input:focus, select:focus { border-color: var(--blue); }
+  .row { display: flex; gap: 8px; } .row > * { flex: 1; min-width: 0; }
+  .row .narrow { flex: 0 0 90px; }
+  .checks { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 10px; margin-top: 10px; }
+  .checks label { display: flex; align-items: center; gap: 6px; margin: 0; color: var(--text); font-size: 12.5px; }
+  button { background: var(--panel2); border: 1px solid var(--line); border-radius: 6px; padding: 7px 12px; cursor: pointer; }
+  button:hover { border-color: var(--blue); }
+  button.primary { background: #2563eb; border-color: #2563eb; width: 100%; margin-top: 12px; font-weight: 600; }
+  button.primary:hover { background: #1d4ed8; }
+  button.small { padding: 3px 8px; font-size: 12px; }
+  button.danger:hover { border-color: var(--red); color: var(--red); }
+  .models-row { display: flex; gap: 6px; } .models-row input { flex: 1; } .models-row button { flex: 0 0 auto; }
+  .botlist { display: flex; flex-direction: column; gap: 6px; }
+  .bot { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+  .bot.sel { border-color: var(--blue); }
+  .bot .top { display: flex; align-items: center; gap: 8px; }
+  .bot .name { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bot .meta { color: var(--dim); font-size: 12px; margin-top: 2px; }
+  .bot .btns { display: flex; gap: 4px; margin-top: 6px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--dim); flex: none; }
+  .dot.online { background: var(--green); } .dot.connecting { background: var(--yellow); }
+  .dot.disconnected, .dot.error { background: var(--red); } .dot.stopped { background: var(--dim); }
+  header.top { padding: 10px 14px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  header.top .title { font-weight: 600; font-size: 15px; }
+  .conn { margin-left: auto; font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+  .stat .k { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
+  .stat .v { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { height: 5px; background: var(--line); border-radius: 3px; margin-top: 4px; overflow: hidden; }
+  .bar > i { display: block; height: 100%; background: var(--red); width: 0; }
+  .bar.food > i { background: #f59e0b; }
+  .mid { display: grid; grid-template-columns: 1fr 260px; flex: 1; min-height: 0; }
+  .term-wrap { display: flex; flex-direction: column; min-width: 0; min-height: 0; border-right: 1px solid var(--line); }
+  .term-tools { display: flex; gap: 10px; align-items: center; padding: 6px 14px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--dim); flex-wrap: wrap; }
+  .term-tools label { display: flex; align-items: center; gap: 4px; margin: 0; }
+  #term { flex: 1; overflow-y: auto; padding: 8px 14px; font: 12.5px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; background: #0b0d11; }
+  .l { white-space: pre-wrap; word-break: break-word; }
+  .l .ts { color: #4b5263; margin-right: 8px; }
+  .l-info { color: #aab0c0; } .l-chat { color: #fff; } .l-server { color: #7c8496; } .l-bot { color: var(--green); }
+  .l-ai { color: var(--purple); } .l-action { color: var(--cyan); } .l-warn { color: var(--yellow); } .l-error { color: var(--red); }
+  #term.hide-chat .l-chat, #term.hide-server .l-server, #term.hide-ai .l-ai, #term.hide-action .l-action, #term.hide-info .l-info { display: none; }
+  .input-row { display: flex; gap: 8px; padding: 8px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+  .input-row select { flex: 0 0 150px; } .input-row input { flex: 1; } .input-row button { flex: 0 0 auto; }
+  .quick { display: flex; gap: 6px; flex-wrap: wrap; padding: 8px 14px; border-top: 1px solid var(--line); background: var(--panel); }
+  .side { overflow-y: auto; padding: 10px 12px; background: var(--panel); }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { background: var(--panel2); border: 1px solid var(--line); border-radius: 12px; padding: 1px 8px; font-size: 12px; }
+  .chip b { color: var(--yellow); font-weight: 600; }
+  .muted { color: var(--dim); font-size: 12px; }
+  details { margin-top: 10px; } summary { cursor: pointer; color: var(--dim); font-size: 12px; }
+  .manual { display: flex; gap: 6px; margin-top: 6px; } .manual input { flex: 1; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
+  #toast { position: fixed; right: 16px; bottom: 16px; background: #3b1d1d; border: 1px solid var(--red); color: #fecaca; padding: 8px 12px; border-radius: 8px; display: none; max-width: 360px; z-index: 10; }
+  .empty { margin: auto; text-align: center; color: var(--dim); padding: 40px; }
+  @media (max-width: 900px) {
+    .app { grid-template-columns: 1fr; height: auto; } main { height: 90vh; }
+    .mid { grid-template-columns: 1fr; } .side { display: none; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <h1>⛏️ Minecraft AI Bot</h1>
+
+    <h2>Bağlantı</h2>
+    <label>Bot adı <span class="muted">(Microsoft girişinde e-posta)</span></label>
+    <input type="text" id="f-name" value="Kaan" autocomplete="off">
+    <div class="row">
+      <div><label>Sunucu IP / adres</label><input type="text" id="f-host" value="localhost" autocomplete="off"></div>
+      <div class="narrow"><label>Port</label><input type="number" id="f-port" value="25565"></div>
+    </div>
+    <div class="row">
+      <div><label>Sürüm</label>
+        <input type="text" id="f-version" value="auto" list="versions" autocomplete="off">
+        <datalist id="versions">
+          <option value="auto"><option value="1.21.4"><option value="1.21.1"><option value="1.20.4"><option value="1.20.1">
+          <option value="1.19.4"><option value="1.18.2"><option value="1.16.5"><option value="1.12.2"><option value="1.8.9">
+        </datalist>
+      </div>
+      <div><label>Giriş</label>
+        <select id="f-auth"><option value="offline">Offline (cracked)</option><option value="microsoft">Microsoft</option></select>
+      </div>
+    </div>
+    <label>Sahip (emir verebilen oyuncu) <span class="muted">boşsa adı geçince herkes</span></label>
+    <input type="text" id="f-owner" placeholder="oyun adın" autocomplete="off">
+
+    <h2>Groq (yapay zeka)</h2>
+    <label>API anahtarı</label>
+    <input type="password" id="f-key" placeholder="gsk_..." autocomplete="off">
+    <label>Model</label>
+    <div class="models-row">
+      <input type="text" id="f-model" value="llama-3.3-70b-versatile" list="models" autocomplete="off">
+      <button type="button" id="btn-models" class="small">Modelleri getir</button>
+    </div>
+    <datalist id="models"><option value="llama-3.3-70b-versatile"><option value="llama-3.1-8b-instant"></datalist>
+    <label>Arama modeli <span class="muted">(web araması; kapatmak için <b>off</b>)</span></label>
+    <input type="text" id="f-search" value="groq/compound-mini" autocomplete="off">
+
+    <div class="checks">
+      <label><input type="checkbox" id="c-pvp"> Oyunculara saldırı</label>
+      <label><input type="checkbox" id="c-cmd" checked> Sunucu komutları</label>
+      <label><input type="checkbox" id="c-rec" checked> Otomatik yeniden bağlan</label>
+      <label title="Açıkken bot yalnızca söylediğini yapar; eksik alet/malzemeyi kendi başına toplamaz, sana sorar"><input type="checkbox" id="c-strict" checked> Sadece emirleri yap</label>
+    </div>
+    <label style="margin-top:10px">Kendi başına davranışlar <span class="muted">(kapalı = hiçbir şeyi kendi kararıyla yapmaz)</span></label>
+    <div class="checks" style="margin-top:4px">
+      <label><input type="checkbox" id="c-def"> Otomatik savunma</label>
+      <label><input type="checkbox" id="c-eat"> Otomatik yemek/zırh</label>
+      <label><input type="checkbox" id="c-rep"> Başarısızlıkta yeniden planla</label>
+    </div>
+    <button class="primary" id="btn-connect">Bağlan</button>
+
+    <h2>Şematikler</h2>
+    <input type="file" id="f-upload" multiple accept=".schem,.litematic,.nbt" style="display:none">
+    <button type="button" id="btn-upload" class="small">Dosya yükle (.schem .litematic .nbt)</button>
+    <div class="row" style="margin-top:8px">
+      <div><label>Kurulum modu</label><select id="s-mode"><option value="place">Envanterle (place)</option><option value="command">OP komutla (command)</option></select></div>
+      <div class="narrow"><label>Döndür</label><select id="s-rot"><option>0</option><option>90</option><option>180</option><option>270</option></select></div>
+    </div>
+    <div class="botlist" id="schemlist" style="margin-top:8px"><div class="muted">Dosya yok.</div></div>
+
+    <h2>Botlar</h2>
+    <div class="botlist" id="botlist"><div class="muted">Henüz bot yok.</div></div>
+  </aside>
+
+  <main>
+    <header class="top">
+      <span class="title" id="h-title">Bot seçilmedi</span>
+      <span class="muted" id="h-sub"></span>
+      <span class="conn"><span class="dot" id="ws-dot"></span><span id="ws-text">panel bağlanıyor...</span></span>
+    </header>
+
+    <div class="stats" id="stats">
+      <div class="stat"><div class="k">Can</div><div class="v" id="s-health">-</div><div class="bar"><i id="b-health"></i></div></div>
+      <div class="stat"><div class="k">Açlık</div><div class="v" id="s-food">-</div><div class="bar food"><i id="b-food"></i></div></div>
+      <div class="stat"><div class="k">Konum</div><div class="v" id="s-pos">-</div></div>
+      <div class="stat"><div class="k">Boyut / Zaman</div><div class="v" id="s-world">-</div></div>
+      <div class="stat"><div class="k">Mod</div><div class="v" id="s-mode">-</div></div>
+      <div class="stat"><div class="k">Yaptığı iş</div><div class="v" id="s-act" title="">-</div></div>
+    </div>
+
+    <div class="mid">
+      <div class="term-wrap">
+        <div class="term-tools">
+          <span>Göster:</span>
+          <label><input type="checkbox" data-f="chat" checked> Sohbet</label>
+          <label><input type="checkbox" data-f="server" checked> Sunucu</label>
+          <label><input type="checkbox" data-f="ai" checked> AI</label>
+          <label><input type="checkbox" data-f="action" checked> Eylem</label>
+          <label><input type="checkbox" data-f="info" checked> Bilgi</label>
+          <button class="small" id="btn-clear" style="margin-left:auto">Temizle</button>
+        </div>
+        <div id="term"></div>
+        <div class="quick" id="quick"></div>
+        <div class="input-row">
+          <select id="in-mode">
+            <option value="ai">Yapay zekaya söyle</option>
+            <option value="chat">Oyunda yaz</option>
+          </select>
+          <input type="text" id="in-text" placeholder="Örn: 20 odun topla, sonra yanıma gel   ( / ile başlayan = oyun komutu )" autocomplete="off">
+          <button id="btn-send" class="primary" style="width:auto;margin:0">Gönder</button>
+        </div>
+      </div>
+
+      <div class="side">
+        <h2 style="margin-top:0">Envanter</h2>
+        <div class="chips" id="inv"><span class="muted">-</span></div>
+        <h2>Oyuncular</h2>
+        <div class="chips" id="players"><span class="muted">-</span></div>
+        <h2>Yakın düşmanlar</h2>
+        <div class="chips" id="hostiles"><span class="muted">-</span></div>
+        <h2>Kayıtlı noktalar</h2>
+        <div class="chips" id="homes"><span class="muted">-</span></div>
+        <details>
+          <summary>Manuel eylem JSON'u</summary>
+          <div class="manual">
+            <input type="text" id="man-json" placeholder='{"type":"collect","block":"oak_log","count":10}'>
+            <button class="small" id="btn-man">Çalıştır</button>
+          </div>
+        </details>
+      </div>
+    </div>
+  </main>
+</div>
+<div id="toast"></div>
+
+<script>
+const $ = (s) => document.querySelector(s)
+const LS = 'mcpanel.cfg.v3'
+let ws = null
+let bots = {}          // name -> { sum, logs, state }
+let selected = null
+const history = []; let histIdx = 0
+
+// ---------- yardımcılar
+function toast(msg) { const t = $('#toast'); t.textContent = msg; t.style.display = 'block'; clearTimeout(toast.t); toast.t = setTimeout(() => (t.style.display = 'none'), 5000) }
+const pad = (n) => String(n).padStart(2, '0')
+const fmtTime = (ts) => { const d = new Date(ts); return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` }
+function wsSend(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); else toast('Panel sunucusuna bağlı değil.') }
+
+// ---------- ayarlar
+function readForm() {
+  return {
+    name: $('#f-name').value.trim(), host: $('#f-host').value.trim(), port: $('#f-port').value, version: $('#f-version').value.trim() || 'auto',
+    auth: $('#f-auth').value, owner: $('#f-owner').value.trim(), groqKey: $('#f-key').value.trim(), model: $('#f-model').value.trim(),
+    allowPvp: $('#c-pvp').checked, allowCommands: $('#c-cmd').checked, autoDefend: $('#c-def').checked, autoEat: $('#c-eat').checked, autoReconnect: $('#c-rec').checked, autoReplan: $('#c-rep').checked, strict: $('#c-strict').checked, searchModel: $('#f-search').value.trim() || 'groq/compound-mini',
+  }
+}
+function saveForm() { try { localStorage.setItem(LS, JSON.stringify(readForm())) } catch (e) {} }
+function loadForm() {
+  try {
+    const c = JSON.parse(localStorage.getItem(LS) || 'null'); if (!c) return
+    $('#f-name').value = c.name || ''; $('#f-host').value = c.host || 'localhost'; $('#f-port').value = c.port || 25565
+    $('#f-version').value = c.version || 'auto'; $('#f-auth').value = c.auth || 'offline'; $('#f-owner').value = c.owner || ''
+    $('#f-key').value = c.groqKey || ''; $('#f-model').value = c.model || 'llama-3.3-70b-versatile'
+    $('#c-pvp').checked = !!c.allowPvp; $('#c-cmd').checked = c.allowCommands !== false; $('#c-def').checked = c.autoDefend === true
+    $('#c-eat').checked = c.autoEat === true; $('#c-rec').checked = c.autoReconnect !== false; $('#c-rep').checked = c.autoReplan === true
+    $('#c-strict').checked = c.strict !== false; $('#f-search').value = c.searchModel || 'groq/compound-mini'
+  } catch (e) {}
+}
+
+// ---------- terminal
+const term = $('#term')
+function addLine(entry) {
+  const div = document.createElement('div')
+  div.className = `l l-${entry.level}`
+  const ts = document.createElement('span'); ts.className = 'ts'; ts.textContent = fmtTime(entry.ts)
+  div.appendChild(ts); div.appendChild(document.createTextNode(entry.text))
+  const atBottom = term.scrollHeight - term.scrollTop - term.clientHeight < 60
+  term.appendChild(div)
+  while (term.children.length > 700) term.removeChild(term.firstChild)
+  if (atBottom) term.scrollTop = term.scrollHeight
+}
+function renderTerm() {
+  term.textContent = ''
+  const b = bots[selected]; if (!b) { term.innerHTML = '<div class="empty">Soldaki formdan bir bot bağla.</div>'; return }
+  b.logs.forEach(addLine); term.scrollTop = term.scrollHeight
+}
+document.querySelectorAll('[data-f]').forEach((cb) => cb.addEventListener('change', () => term.classList.toggle('hide-' + cb.dataset.f, !cb.checked)))
+$('#btn-clear').onclick = () => { if (bots[selected]) { bots[selected].logs = []; renderTerm() } }
+
+// ---------- liste & başlık
+const STATUS_TR = { idle: 'bekliyor', connecting: 'bağlanıyor', online: 'çevrimiçi', disconnected: 'koptu', stopped: 'durduruldu', error: 'hata' }
+function renderList() {
+  const el = $('#botlist'); el.textContent = ''
+  const names = Object.keys(bots)
+  if (!names.length) { el.innerHTML = '<div class="muted">Henüz bot yok.</div>'; return }
+  names.forEach((n) => {
+    const s = bots[n].sum
+    const d = document.createElement('div'); d.className = 'bot' + (n === selected ? ' sel' : '')
+    d.onclick = () => select(n)
+    const top = document.createElement('div'); top.className = 'top'
+    const dot = document.createElement('span'); dot.className = 'dot ' + s.status
+    const nm = document.createElement('span'); nm.className = 'name'; nm.textContent = n
+    const st = document.createElement('span'); st.className = 'muted'; st.textContent = STATUS_TR[s.status] || s.status
+    top.append(dot, nm, st)
+    const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `${s.host}:${s.port} · ${s.version} · ${s.aiOn ? s.model : 'AI kapalı'}`
+    const btns = document.createElement('div'); btns.className = 'btns'
+    const mk = (txt, fn, cls = '') => { const b = document.createElement('button'); b.className = 'small ' + cls; b.textContent = txt; b.onclick = (e) => { e.stopPropagation(); fn() }; return b }
+    btns.append(mk('Yeniden bağlan', () => wsSend({ t: 'reconnect', name: n })), mk('Durdur', () => wsSend({ t: 'disconnect', name: n })), mk('Sil', () => wsSend({ t: 'remove', name: n }), 'danger'))
+    d.append(top, meta, btns); el.appendChild(d)
+  })
+}
+function select(n) { selected = n; renderList(); renderTerm(); renderHeader(); renderState() }
+function renderHeader() {
+  const b = bots[selected]
+  $('#h-title').textContent = b ? b.sum.name : 'Bot seçilmedi'
+  $('#h-sub').textContent = b ? `${b.sum.host}:${b.sum.port} · ${STATUS_TR[b.sum.status] || b.sum.status}` : ''
+}
+function chips(el, items, fmt) {
+  el.textContent = ''
+  if (!items.length) { el.innerHTML = '<span class="muted">-</span>'; return }
+  items.forEach((i) => { const c = document.createElement('span'); c.className = 'chip'; c.innerHTML = ''; fmt(c, i); el.appendChild(c) })
+}
+function renderState() {
+  const s = (bots[selected] && bots[selected].state) || {}
+  const on = s.health !== undefined
+  $('#s-health').textContent = on ? `${s.health} / 20` : '-'; $('#b-health').style.width = on ? (s.health / 20 * 100) + '%' : '0'
+  $('#s-food').textContent = on ? `${s.food} / 20` : '-'; $('#b-food').style.width = on ? (s.food / 20 * 100) + '%' : '0'
+  $('#s-pos').textContent = on ? s.pos.join(', ') : '-'
+  $('#s-world').textContent = on ? `${(s.dimension || '').replace('minecraft:', '')} · ${s.time}${s.raining ? ' · yağmur' : ''}` : '-'
+  $('#s-mode').textContent = s.mode || '-'
+  $('#s-act').textContent = s.activity || '-'; $('#s-act').title = s.activity || ''
+  chips($('#inv'), s.inventory || [], (c, i) => { c.append(document.createTextNode(i.name + ' '), Object.assign(document.createElement('b'), { textContent: '×' + i.count })) })
+  chips($('#players'), s.players || [], (c, p) => { c.textContent = p.name + (p.dist !== null ? ` (${p.dist}m)` : '') })
+  chips($('#hostiles'), Object.entries(s.hostiles || {}), (c, [n, k]) => { c.textContent = `${n} ×${k}` })
+  chips($('#homes'), Object.entries(s.homes || {}), (c, [n, p]) => { c.textContent = `${n}: ${p.join(', ')}` })
+}
+
+// ---------- hızlı eylemler
+const QUICK = [
+  ['Dur', { type: 'stop' }], ['Takip et', { type: 'follow', target: 'sender' }], ['Yanıma gel', { type: 'goto_player', target: 'sender' }],
+  ['Nöbet', { type: 'guard' }], ['Ye', { type: 'eat' }], ['Uyu', { type: 'sleep' }], ['Gez', { type: 'wander' }],
+  ['Eşyaları topla', { type: 'pickup' }], ['Hasat', { type: 'farm' }], ['Ev kaydet', { type: 'set_home', name: 'ev' }], ['Eve dön', { type: 'go_home', name: 'ev' }],
+  ['Barınak', { type: 'shelter' }], ['Kapı aç/kapat', { type: 'door' }], ['Şişe doldur', { type: 'fill_bottles' }], ['İksir iç', { type: 'drink' }],
+]
+QUICK.forEach(([label, action]) => {
+  const b = document.createElement('button'); b.className = 'small'; b.textContent = label
+  b.onclick = () => { if (!selected) return toast('Önce bir bot seç.'); wsSend({ t: 'action', name: selected, action }) }
+  $('#quick').appendChild(b)
+})
+
+// ---------- gönderme
+function sendInput() {
+  const text = $('#in-text').value.trim(); if (!text) return
+  if (!selected) return toast('Önce bir bot seç.')
+  wsSend({ t: 'say', name: selected, text, mode: $('#in-mode').value })
+  history.push(text); histIdx = history.length; $('#in-text').value = ''
+}
+$('#btn-send').onclick = sendInput
+$('#in-text').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') sendInput()
+  else if (e.key === 'ArrowUp' && history.length) { histIdx = Math.max(0, histIdx - 1); $('#in-text').value = history[histIdx] || ''; e.preventDefault() }
+  else if (e.key === 'ArrowDown' && history.length) { histIdx = Math.min(history.length, histIdx + 1); $('#in-text').value = history[histIdx] || ''; e.preventDefault() }
+})
+$('#btn-man').onclick = () => {
+  if (!selected) return toast('Önce bir bot seç.')
+  try { wsSend({ t: 'action', name: selected, action: JSON.parse($('#man-json').value) }) } catch (e) { toast('Geçersiz JSON: ' + e.message) }
+}
+$('#btn-connect').onclick = () => { saveForm(); wsSend({ t: 'connect', cfg: readForm() }); const n = $('#f-name').value.trim(); if (n) setTimeout(() => bots[n] && select(n), 300) }
+$('#btn-models').onclick = () => wsSend({ t: 'models', key: $('#f-key').value.trim() })
+
+// ---------- şematikler
+function renderSchematics(files) {
+  const el = $('#schemlist'); el.textContent = ''
+  if (!files || !files.length) { el.innerHTML = '<div class="muted">Dosya yok.</div>'; return }
+  files.forEach((f) => {
+    const d = document.createElement('div'); d.className = 'bot'
+    const nm = document.createElement('div'); nm.className = 'name'; nm.textContent = f.name
+    const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = Math.round(f.size / 1024) + ' KB'
+    const btns = document.createElement('div'); btns.className = 'btns'
+    const mk = (txt, fn, cls = '') => { const b = document.createElement('button'); b.className = 'small ' + cls; b.textContent = txt; b.onclick = fn; return b }
+    const act = (action) => () => { if (!selected) return toast('Önce bir bot seç.'); wsSend({ t: 'action', name: selected, action }) }
+    btns.append(
+      mk('Bilgi', act({ type: 'schematic_info', file: f.name })),
+      mk('Kur', () => { if (!selected) return toast('Önce bir bot seç.'); wsSend({ t: 'action', name: selected, action: { type: 'schematic', file: f.name, mode: $('#s-mode').value, rotate: Number($('#s-rot').value) } }) }),
+      mk('Sil', () => { if (confirm(f.name + ' silinsin mi?')) wsSend({ t: 'delete_schematic', file: f.name }) }, 'danger'))
+    d.append(nm, meta, btns); el.appendChild(d)
+  })
+}
+$('#btn-upload').onclick = () => $('#f-upload').click()
+$('#f-upload').onchange = async (e) => {
+  for (const file of e.target.files) {
+    try {
+      const r = await fetch('/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file })
+      const j = await r.json()
+      if (!r.ok) toast(file.name + ': ' + (j.error || 'yüklenemedi')); else toast(file.name + ' yüklendi.')
+    } catch (err) { toast('Yükleme hatası: ' + err.message) }
+  }
+  e.target.value = ''
+}
+;['f-name', 'f-host', 'f-port', 'f-version', 'f-auth', 'f-owner', 'f-key', 'f-model'].forEach((id) => $('#' + id).addEventListener('change', saveForm))
+
+// ---------- WebSocket
+function setConn(on) { $('#ws-dot').className = 'dot ' + (on ? 'online' : 'disconnected'); $('#ws-text').textContent = on ? 'panel bağlı' : 'panel bağlantısı koptu' }
+function connectWS() {
+  ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}`)
+  ws.onopen = () => setConn(true)
+  ws.onclose = () => { setConn(false); setTimeout(connectWS, 1500) }
+  ws.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data) } catch (err) { return }
+    switch (m.t) {
+      case 'init':
+        bots = {}
+        m.bots.forEach((s) => { bots[s.name] = { sum: s, logs: (m.logs && m.logs[s.name]) || [], state: null } })
+        if (!bots[selected]) selected = Object.keys(bots)[0] || null
+        renderSchematics(m.schematics)
+        if (m.defaults) { if (m.defaults.keyFromEnv && !$('#f-key').value) $('#f-key').placeholder = 'sunucu ortamından (GROQ_API_KEY) kullanılacak' }
+        renderList(); renderTerm(); renderHeader(); renderState(); break
+      case 'schematics': renderSchematics(m.files); break
+      case 'added':
+        bots[m.summary.name] = { sum: m.summary, logs: [], state: null }
+        if (!selected) selected = m.summary.name
+        renderList(); renderHeader(); if (selected === m.summary.name) renderTerm(); break
+      case 'removed':
+        delete bots[m.name]; if (selected === m.name) selected = Object.keys(bots)[0] || null
+        renderList(); renderTerm(); renderHeader(); renderState(); break
+      case 'status':
+        if (bots[m.name]) { bots[m.name].sum = m.summary; renderList(); if (selected === m.name) renderHeader() } break
+      case 'log':
+        if (bots[m.name]) { bots[m.name].logs.push(m.entry); if (bots[m.name].logs.length > 700) bots[m.name].logs.shift(); if (selected === m.name) addLine(m.entry) } break
+      case 'state':
+        if (bots[m.name]) { bots[m.name].state = m.state; if (selected === m.name) renderState() } break
+      case 'models': {
+        if (m.error) return toast(m.error)
+        const dl = $('#models'); dl.textContent = ''
+        m.models.forEach((id) => { const o = document.createElement('option'); o.value = id; dl.appendChild(o) })
+        toast(`${m.models.length} model bulundu. Model kutusuna tıklayıp seçebilirsin.`); break
+      }
+      case 'error': toast(m.error); break
+    }
+  }
+}
+loadForm(); connectWS()
+</script>
+</body>
+                                                    </html>

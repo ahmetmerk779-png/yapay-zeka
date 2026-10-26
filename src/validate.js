@@ -312,7 +312,14 @@ function validateActions(inst, rawActions, ctx = {}) {
     set_home: (a) => ({ name: String(a.name || 'home').slice(0, 24) }),
     go_home: (a) => ({ name: String(a.name || 'home').slice(0, 24) }),
     mount: (a) => ({ name: h.mob(a.target) }),
-    collect: (a) => ({ ...h.blocks(a.block || a.ore), count: h.int(a.count, 8, 1, 512, 'count') }),
+    collect: (a) => {
+      let b = h.blocks(a.block || a.ore)
+      // Tek bir ağaç türü istense bile (oak_log) herhangi bir odun kabul edilir: yakında o tür yoksa bot boşuna dolaşmasın
+      if (b.defs.length === 1 && /_log$/.test(b.defs[0].name)) {
+        b = { defs: Object.values(md.blocksByName).filter((x) => x.name.endsWith('_log') && !x.name.startsWith('stripped_')), label: 'odun' }
+      }
+      return { ...b, count: h.int(a.count, 8, 1, 512, 'count') }
+    },
     mine: (a) => ({ ...h.blocks(a.block || a.ore || a.target), count: h.int(a.count, 8, 1, 256, 'count'), maxTunnel: h.int(a.maxTunnel, 160, 10, 400, 'maxTunnel') }),
     pickup: (a) => ({ radius: h.int(a.radius, 16, 3, 32, 'radius') }),
     tunnel: (a) => {

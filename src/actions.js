@@ -153,8 +153,8 @@ async function goTo(inst, goal, opts = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     let finished = false
     let result = false
+    let abortedStuck = false
     const start = bot.pathfinder.goto(goal).then(() => { result = true }, () => { result = false }).then(() => { finished = true })
-    // İzleyici: 3 sn'de 0.4 bloktan az ilerleme = takıldı
     let last = bot.entity.position.clone()
     let lastMove = Date.now()
     const t0 = Date.now()
@@ -162,14 +162,17 @@ async function goTo(inst, goal, opts = {}) {
       await sleep(500)
       if (opts.cancelled && opts.cancelled()) { try { bot.pathfinder.stop() } catch (e) { /* yok */ } break }
       const p = bot.entity.position
-      if (p.distanceTo(last) > 0.4) { last = p.clone(); lastMove = Date.now() }
-      const stuck = Date.now() - lastMove > 3000
+      // Kazarken / yol hesaplarken durmak takılmak sayılmaz
+      const busy = !!bot.targetDigBlock || !(bot.pathfinder.isMoving && bot.pathfinder.isMoving())
+      if (p.distanceTo(last) > 0.4 || busy) { last = p.clone(); lastMove = Date.now() }
+      const stuck = Date.now() - lastMove > 5000
       const tooLong = Date.now() - t0 > (opts.timeoutMs || 60000)
-      if (stuck || tooLong) { try { bot.pathfinder.stop() } catch (e) { /* yok */ } break }
+      if (stuck || tooLong) { abortedStuck = stuck; try { bot.pathfinder.stop() } catch (e) { /* yok */ } break }
     }
     await Promise.race([start, sleep(1000)])
     if (result) return true
     if (opts.cancelled && opts.cancelled()) return false
+    if (!abortedStuck) return false   // yol yok / hedef erişilemez: zıplamanın faydası yok
     await unstick(inst, attempt)
   }
   return false

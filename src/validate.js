@@ -27,7 +27,8 @@ const ACTION_DOCS = [
   ['wake', '{"type":"wake"}', 'uyanıp yataktan kalk'],
   ['stop', '{"type":"stop"}', 'yaptığın her işi durdur'],
   // Toplama / madencilik / çiftçilik
-  ['collect', '{"type":"collect","block":"oak_log","count":20}', 'blok kaz/topla (ağaç, maden, kum...)'],
+  ['collect', '{"type":"collect","block":"oak_log","count":20}', 'yakındaki blokları kaz/topla (ağaç, kum, taş...). Maden için mine kullan'],
+  ['mine', '{"type":"mine","block":"iron_ore","count":10}', 'MADEN kaz: cevher yakında yoksa uygun yüksekliğe inip tünel kazarak kendi arar (kazma gerekir). Elmas/demir/altın/kömür/bakır/redstone/lapis için bunu kullan'],
   ['pickup', '{"type":"pickup","radius":16}', 'yerdeki eşyaları topla'],
   ['tunnel', '{"type":"tunnel","direction":"forward","length":10}', 'düz tünel kaz (forward/north/south/east/west)'],
   ['dig_down', '{"type":"dig_down","depth":10}', 'aşağı doğru kaz (depth ya da hedef y)'],
@@ -73,18 +74,18 @@ const ACTION_DOCS = [
   ['build', '{"type":"build","offset":2,"blocks":[{"x":0,"y":0,"z":0,"block":"oak_planks"},{"x":1,"y":0,"z":0,"block":"oak_planks"}]}', 'blok listesinden yapı kur. x=sağ, y=yukarı, z=ileri (botun baktığı yöne göre, offset kadar önünden başlar). En fazla 300 blok; yön gereken bloklara "facing" ekle'],
   ['write_sign', '{"type":"write_sign","text":"Ev|Hoş geldin"}', 'yerleştirilmiş tabelaya yaz (satırlar | ile ayrılır)'],
   // Şematik, arama, PvP, hazır yapılar
-  ['schematic', '{"type":"schematic","file":"ev.schem","rotate":0,"mode":"place"}', 'schematics klasöründeki .schem/.litematic/.nbt dosyasını botun önüne kur (mode: place = envanterdeki bloklarla, command = OP ile /setblock /fill; x,y,z verilirse tam konum; partial:true eksik malzemeyle devam; with_air:true alanı önce temizle)'],
+  ['schematic', '{"type":"schematic","file":"ev.schem","rotate":0}', 'schematics klasöründeki .schem/.litematic/.nbt dosyasını botun önüne BLOKLARI KENDİ KOYARAK kur (komut kullanmaz; creative ise blokları kendi envanterine ekler). rotate: 0/90/180/270; x,y,z verilirse tam konum; partial:true eksik malzemeyle devam; with_air:true alandaki fazlalıkları önce kır'],
   ['schematic_info', '{"type":"schematic_info","file":"ev.schem"}', 'şematiğin boyutunu ve gereken/eksik malzemeyi söyle'],
   ['list_schematics', '{"type":"list_schematics"}', 'yüklü şematik dosyalarını listele'],
   ['download_schematic', '{"type":"download_schematic","url":"https://.../ev.schem","name":"ev.schem"}', 'oyuncunun verdiği bağlantıdan şematik indir'],
   ['web_search', '{"type":"web_search","query":"minecraft piston door redstone design"}', 'web\'de araştır ve öğren (sonuç sana [ARAŞTIRMA SONUCU] olarak gelir)'],
   ['crystal_pvp', '{"type":"crystal_pvp","target":"OyuncuAdi","seconds":120}', 'oyuncuyla kristal PvP (end_crystal + obsidyen/bedrock gerekir; sadece açıkça istenirse)'],
   ['make_farm', '{"type":"make_farm","crop":"wheat","radius":4}', 'önünde çalışan tarla kur (çapa, su kovası ve tohum gerekir)'],
-  ['house', '{"type":"house","size":"small","wall":"oak_planks"}', 'kapı, pencere, çatı ve meşaleli ev kur (size: small/medium/large)'],
+  ['house', '{"type":"house","size":"small","wall":"oak_planks"}', 'ev kur (size small=5x5/medium=7x7/large=9x9; wall/floor/roof/glass/door opsiyonel). Malzeme: small ~ 25 zemin + ~44 duvar + 25 çatı blok; kapı/cam/meşale yoksa atlanır. Parametre vermezsen envanterdeki en bol blok seçilir'],
 ]
 
 const TYPE_ALIASES = {
-  mine: 'collect', gather: 'collect', chop: 'collect', get: 'collect',
+  gather: 'collect', chop: 'collect', get: 'collect',
   kill: 'attack', fight: 'attack',
   go: 'goto', walk: 'goto', move: 'goto',
   come: 'goto_player', come_here: 'goto_player', come_to: 'goto_player',
@@ -94,7 +95,7 @@ const TYPE_ALIASES = {
   make: 'craft', wear: 'equip', hold: 'equip',
   pause: 'wait', say: 'chat', message: 'chat', whisper: 'chat',
   cmd: 'command', run_command: 'command',
-  dig: 'break', destroy: 'break', build_shelter: 'shelter', explore: 'wander', fishing: 'fish',
+  strip_mine: 'mine', mine_ore: 'mine', dig_ore: 'mine', dig: 'break', destroy: 'break', build_shelter: 'shelter', explore: 'wander', fishing: 'fish',
   open: 'activate_block', interact: 'activate_block', right_click: 'activate_block',
   deposit: 'store', put: 'store', withdraw: 'take',
   ride: 'mount', unmount: 'dismount', locate: 'find', search: 'find', scan: 'find',
@@ -110,7 +111,7 @@ const TYPE_ALIASES = {
 
 const BLOCK_SYNONYMS = {
   stone: 'stone', taş: 'stone', tas: 'stone', cobble: 'cobblestone', kırmataş: 'cobblestone',
-  coal: 'coal_ore', kömür: 'coal_ore', komur: 'coal_ore',
+  ancient_debris: 'ancient_debris', quartz: 'nether_quartz_ore', kuvars: 'nether_quartz_ore', coal: 'coal_ore', kömür: 'coal_ore', komur: 'coal_ore',
   iron: 'iron_ore', demir: 'iron_ore', gold: 'gold_ore', altın: 'gold_ore', altin: 'gold_ore',
   diamond: 'diamond_ore', elmas: 'diamond_ore', copper: 'copper_ore', bakır: 'copper_ore', bakir: 'copper_ore',
   redstone: 'redstone_ore', lapis: 'lapis_ore', emerald: 'emerald_ore', zümrüt: 'emerald_ore',
@@ -311,7 +312,8 @@ function validateActions(inst, rawActions, ctx = {}) {
     set_home: (a) => ({ name: String(a.name || 'home').slice(0, 24) }),
     go_home: (a) => ({ name: String(a.name || 'home').slice(0, 24) }),
     mount: (a) => ({ name: h.mob(a.target) }),
-    collect: (a) => ({ ...h.blocks(a.block), count: h.int(a.count, 8, 1, 512, 'count') }),
+    collect: (a) => ({ ...h.blocks(a.block || a.ore), count: h.int(a.count, 8, 1, 512, 'count') }),
+    mine: (a) => ({ ...h.blocks(a.block || a.ore || a.target), count: h.int(a.count, 8, 1, 256, 'count'), maxTunnel: h.int(a.maxTunnel, 160, 10, 400, 'maxTunnel') }),
     pickup: (a) => ({ radius: h.int(a.radius, 16, 3, 32, 'radius') }),
     tunnel: (a) => {
       const d = DIRECTIONS[normName(a.direction || 'forward')]
@@ -455,11 +457,9 @@ function validateActions(inst, rawActions, ctx = {}) {
       if (!file) throw new Error(`şematik bulunamadı: "${a.file}". Mevcut: ${Sch.listFiles().map((f) => f.name).join(', ') || 'hiç dosya yok (panelden yükle)'}`)
       const rotate = Number(a.rotate ?? 0)
       if (![0, 90, 180, 270].includes(rotate)) throw new Error('rotate 0, 90, 180 ya da 270 olmalı')
-      const mode = normName(a.mode || 'place')
-      if (!['place', 'command'].includes(mode)) throw new Error('mode place ya da command olmalı')
-      if (mode === 'command' && (!ctx.trusted || !inst.cfg.allowCommands)) throw new Error('komut modu kapalı ya da yetkin yok')
-      const out = { file, rotate, mode, offset: h.int(a.offset, 3, 1, 64, 'offset'), dy: h.int(a.dy, 0, -16, 16, 'dy'),
-        withAir: a.with_air === true || a.withAir === true, partial: a.partial === true, delayMs: h.int(a.delay_ms ?? a.delayMs, 120, 30, 2000, 'delay_ms') }
+      // Not: eski "mode":"command" artık yok; şematik her zaman botun kendi elleriyle kurulur
+      const out = { file, rotate, offset: h.int(a.offset, 3, 1, 64, 'offset'), dy: h.int(a.dy, 0, -16, 16, 'dy'),
+        withAir: a.with_air === true || a.withAir === true || a.clear === true, partial: a.partial === true }
       if (a.x !== undefined && a.z !== undefined && a.y !== undefined) out.pos = h.coord(a)
       return out
     },
@@ -494,11 +494,25 @@ function validateActions(inst, rawActions, ctx = {}) {
       if (!crop) throw new Error('crop wheat/carrots/potatoes/beetroots olmalı')
       return { crop, radius: h.int(a.radius, 4, 2, 6, 'radius'), offset: h.int(a.offset, 2, 1, 16, 'offset') }
     },
-    house: (a) => ({
-      size: ['small', 'medium', 'large'].includes(normName(a.size)) ? normName(a.size) : 'small',
-      wall: h.placeable(a.wall || 'oak_planks'), floor: h.placeable(a.floor || a.wall || 'cobblestone'), roof: h.placeable(a.roof || a.wall || 'oak_planks'),
-      glass: h.placeable(a.glass || 'glass'), door: h.placeable(a.door || 'oak_door'), offset: h.int(a.offset, 2, 1, 16, 'offset'),
-    }),
+    house: (a) => {
+      const size = ['small', 'medium', 'large'].includes(normName(a.size)) ? normName(a.size) : 'small'
+      // Malzeme verilmediyse envanterdeki en bol yapı bloğunu hepsi için kullan (yeterliyse)
+      let auto = null
+      if (!a.wall && !a.floor && !a.roof) {
+        const need = { small: 95, medium: 170, large: 240 }[size]
+        const BUILD_OK = /(_planks|^cobblestone|^stone$|^stone_bricks|^bricks|^dirt|^cobbled_deepslate|^deepslate_bricks|^sandstone|^smooth_stone|^netherrack|^spruce_planks)$/
+        const tot = {}
+        bot.inventory.items().forEach((i) => { if (BUILD_OK.test(i.name)) tot[i.name] = (tot[i.name] || 0) + i.count })
+        const best = Object.entries(tot).sort((x, y) => y[1] - x[1])[0]
+        if (best && best[1] >= need) auto = best[0]
+      }
+      const W = a.wall || auto || 'oak_planks'
+      return {
+        size,
+        wall: h.placeable(W), floor: h.placeable(a.floor || auto || a.wall || 'cobblestone'), roof: h.placeable(a.roof || auto || a.wall || 'oak_planks'),
+        glass: h.placeable(a.glass || 'glass'), door: h.placeable(a.door || 'oak_door'), offset: h.int(a.offset, 2, 1, 16, 'offset'),
+      }
+    },
     wait: (a) => ({ seconds: h.int(a.seconds, 3, 1, 120, 'seconds') }),
   }
 

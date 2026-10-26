@@ -225,6 +225,14 @@ class BotInstance {
       this.movements.allowSprinting = true
       this.movements.allowParkour = true
       this.movements.allow1by1towers = true
+      this.movements.maxDropDown = 4
+      this.movements.digCost = 2          // kazarak geçmek yerine mümkünse dolaş
+      this.movements.placeCost = 3
+      try { bot.pathfinder.thinkTimeout = 6000; bot.pathfinder.tickTimeout = 40 } catch (e) { /* eski sürüm */ }
+      try {   // iskele olarak sadece ucuz bloklar kullan
+        const cheap = ['dirt', 'cobblestone', 'netherrack', 'cobbled_deepslate', 'stone', 'oak_planks']
+        this.movements.scafoldingBlocks = cheap.map((n) => this.mcData.itemsByName[n] && this.mcData.itemsByName[n].id).filter((x) => x !== undefined)
+      } catch (e) { /* yoksay */ }
       if ('canOpenDoors' in this.movements) this.movements.canOpenDoors = true
       bot.pathfinder.setMovements(this.movements)
       this.ready = true
@@ -485,23 +493,27 @@ class BotInstance {
   snapshot(label, trusted, message = '') {
     const s = this.getState()
     const inv = {}
-    ;(s.inventory || []).forEach((i) => { inv[i.name] = i.count })
+    ;(s.inventory || []).slice(0, 25).forEach((i) => { inv[i.name] = i.count })
     return {
       gonderen: label, sahibi_mi: trusted, can: s.health, aclik: s.food, konum: s.pos, boyut: s.dimension,
       oyun_modu: s.gamemode, zaman: s.time, yagmur: s.raining, elinde: s.held, envanter: inv,
-      oyuncular: (s.players || []).map((p) => ({ ad: p.name, mesafe: p.dist })), yakin_dusmanlar: s.hostiles,
+      oyuncular: (s.players || []).slice(0, 6).map((p) => ({ ad: p.name, mesafe: p.dist })), yakin_dusmanlar: s.hostiles,
       kayitli_noktalar: s.homes, mod: this.mode, yaptigi_is: this.activity,
       son_gorev_sonuclari: this.lastResults.slice(-4), son_soylediklerin: this.recentSaid.slice(-5),
       ogrendiklerin: this.relevantNotes(message),
-      yuklu_sematikler: require('./schematic').listFiles().map((f) => f.name).slice(0, 15),
+      yuklu_sematikler: /sema|schem|litem|yap[ıi]|kur|ev\b/i.test(message) ? require('./schematic').listFiles().map((f) => f.name).slice(0, 10) : undefined,
     }
   }
 
   async planFromAI(senderPlayer, trusted) {
-    let messages = [{ role: 'system', content: this.system }, ...this.history]
+    // Token tasarrufu: yalnızca SON mesajın [DURUM] bloğu tam kalır, eskilerinden çıkarılır
+    const hist = this.history.map((m, i) => (m.role === 'user' && i < this.history.length - 1
+      ? { role: 'user', content: m.content.replace(/^\[DURUM\] .*\n/, '') }
+      : m))
+    let messages = [{ role: 'system', content: this.system }, ...hist]
     let lastPlan = null
     for (let attempt = 0; attempt < 2; attempt++) {
-      const text = await ai.chat({ apiKey: this.cfg.groqKey, model: this.cfg.model, messages, json: true, maxTokens: 2800 })
+      const text = await ai.chat({ apiKey: this.cfg.groqKey, model: this.cfg.model, messages, json: true, maxTokens: 1200 })
       const ex = ai.extractJson(text)
       let problems = []
       let plan = null
@@ -547,7 +559,7 @@ class BotInstance {
     this.log('ai', `(${Date.now() - t0} ms) ${JSON.stringify({ say: plan.say, actions: plan.actions.map(simplify) })}`)
 
     this.history.push({ role: 'assistant', content: JSON.stringify({ say: plan.say || '', actions: plan.actions.map(simplify) }) })
-    while (this.history.length > 14) this.history.splice(0, 2)
+    while (this.history.length > 8) this.history.splice(0, 2)
 
     if (plan.say) this.say(plan.say)
     if (trusted && plan.dropped && plan.dropped.length) {

@@ -32,9 +32,12 @@ async function listModels(apiKey) {
 }
 
 // Sohbet tamamlama. json=true -> JSON modu (başarısız olursa kendi ayrıştırmamıza düşer)
+const FALLBACK_MODEL = process.env.GROQ_FALLBACK_MODEL || 'llama-3.1-8b-instant'   // ayrı (daha geniş) token limiti olan yedek model
+
 async function chat({ apiKey, model, messages, json = false, maxTokens = 900, temperature = 0.7 }) {
   let useJson = json
-  for (let attempt = 0; attempt < 4; attempt++) {
+  let usedFallback = false
+  for (let attempt = 0; attempt < 5; attempt++) {
     const body = { model, messages, max_tokens: maxTokens, temperature }
     if (useJson) body.response_format = { type: 'json_object' }
     const res = await request('/chat/completions', { apiKey, method: 'POST', body })
@@ -44,8 +47,16 @@ async function chat({ apiKey, model, messages, json = false, maxTokens = 900, te
     }
     const text = await res.text()
     if (res.status === 429) {
-      const wait = Math.min(Number(res.headers.get('retry-after')) || 3, 12)
-      await sleep(wait * 1000)
+      const retryAfter = Number(res.headers.get('retry-after')) || 3
+      // Uzun bekleme = günlük/dakikalık token limiti doldu: yedek modele geç
+      if ((retryAfter > 10 || attempt >= 1) && !usedFallback && model !== FALLBACK_MODEL) {
+        usedFallback = true
+        model = FALLBACK_MODEL
+        maxTokens = Math.min(maxTokens, 1200)
+        continue
+      }
+      if (retryAfter > 20) throw new Error(`Groq token limiti doldu, ${Math.round(retryAfter)} sn sonra tekrar dene`)
+      await sleep(Math.min(retryAfter, 12) * 1000)
       continue
     }
     if (res.status === 400) {
@@ -106,6 +117,8 @@ Kurallar:
 - Eylem gerekiyorsa say'de ne yapacağını kendi tarzınla kısaca söyle. Sonucu önceden söyleme; sonuç sistem tarafından sana [OLAY] olarak bildirilir.
 - Birden fazla iş varsa actions içine sırayla koy (en fazla ${MAX_ACTIONS}).
 ${opts.strict ? STRICT_RULE : CHAIN_RULE}
+- MADEN (cevher: kömür, demir, bakır, altın, elmas, redstone, lapis, zümrüt, ancient_debris) için "mine" kullan; "collect" sadece ağaç/kum/taş gibi yakındaki bloklar içindir. mine, cevher yoksa kendi inip tünel kazarak arar. Eşya olarak ham maden (raw_iron) istenirse block iron_ore yaz, sonra smelt öner.
+- EV için "house" kullan (size small/medium/large). Parametre vermezsen envanterdeki en bol blok seçilir. Malzeme yetersizse sistem eksikleri söyler: o zaman oyuncuya say ya da (izin varsa) odun/taş topla (collect oak_log -> craft oak_planks). Özel tasarımlı ev için build/fill kullan.
 - Madenler için alet gerekir: taş/kömür -> en az wooden_pickaxe, demir/bakır/lapis -> stone_pickaxe, elmas/altın/redstone/zümrüt -> iron_pickaxe.
 - Yiyecek için olgun ekin ya da av gerekir: farm, attack cow/pig/chicken, smelt ile pişirme.
 - İmkânsız ya da anlamsız bir istekse o eylemi koyma, nedenini say'de doğal şekilde anlat.
@@ -116,7 +129,7 @@ ${opts.strict ? STRICT_RULE : CHAIN_RULE}
 - Büyü: enchanting_table + lapis_lazuli + yeterli XP gerekir (enchant). Örs için anvil. İksir için sırayla: fill_bottles -> brew nether_wart (awkward) -> brew hedef malzeme -> drink. Simya için blaze_powder yakıtı şart.
 - Nether portalı için 12 obsidian + flint_and_steel gerekir (nether_portal). Obsidyen kazmak için diamond_pickaxe lazım.
 - Redstone: fill ya da place ile "redstone" (toz), "lever", "repeater", "piston" koy; yön gerekiyorsa facing ekle. Karmaşık devrelerde başarı garanti değildir, ne yapabildiğini dürüstçe söyle.
-- Şematik/litematic/schem/yapı dosyasından bir şey kurulacaksa: dosya adı belli değilse list_schematics, malzeme sorulursa schematic_info, kurmak için schematic. OP/komut izni varsa ve oyuncu isterse mode:"command" (tam blok durumları, hızlı); aksi halde mode:"place" (envanterdeki bloklarla, tam yön/yarım blok desteği sınırlı). Ev için house, tarla için make_farm kullan.
+- Şematik/litematic/schem/yapı dosyasından bir şey kurulacaksa: dosya adı belli değilse list_schematics, malzeme sorulursa schematic_info, kurmak için schematic. Bot blokları KENDİ ELİYLE koyar; yapı için asla command/setblock/fill komutu kullanma (command eylemi sadece oyuncu özellikle /time gibi bir komut isterse). Ev için house, tarla için make_farm kullan.
 - Bilmediğin bir tarif, mekanik, redstone tasarımı ya da yapı için web_search kullan; sonuç sana [ARAŞTIRMA SONUCU] olarak gelir, sonra oyuncunun isteğini ona göre yerine getir. Bildiğin şeyler için arama yapma.
 - Kristal PvP (crystal_pvp) yalnızca oyuncu bir kişiyle dövüşmeni açıkça isterse.
 - Görev başarısız olursa sistem sana [GÖREV SONUCU] gönderir; sebebi çözülebiliyorsa düzeltilmiş yeni plan ver, çözemiyorsan oyuncuya açıkça anlat.

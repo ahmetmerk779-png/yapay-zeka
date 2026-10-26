@@ -7,7 +7,106 @@ const { Vec3 } = require('vec3')
 const Sch = require('./schematic')
 const search = require('./search')
 const crystal = require('./crystal')
-const Builder = require('./builder')
+// builder.js ayrı dosya olarak gerekmesin diye buraya gömüldü
+const Builder = (() => {
+// Blokları elle koymak için sıra planlayıcı (saf mantık, Minecraft'a bağlı değil).
+// Kural: bir blok ancak yaslanacak katı bir komşusu varsa koyulabilir.
+// Komşusu olmayan (havada kalan) bloklar için yerden geçici bir iskele sütunu planlanır,
+// iş bitince iskele yukarıdan aşağı kırılır.
+
+const key = (x, y, z) => `${x},${y},${z}`
+const DIRS = [[0, -1, 0], [0, 1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1]]
+
+// Yaslanılamayan/yaslanmaya uygun olmayan bloklar (ince, sıvı, bitki, etkileşimli vb.)
+const NON_SUPPORT = /(torch|redstone_wire|lever|button|sign|banner|carpet|pressure_plate|rail|repeater|comparator|flower|sapling|^grass$|^short_grass$|^tall_grass$|fern|^wheat$|carrots|potatoes|beetroots|vine|ladder|tripwire|^snow$|candle|_head$|_skull$|^water$|^lava$|flower_pot|lantern|chain|_rod$|^air$|cave_air|void_air|_coral$|_fan$|pickles|egg|cobweb|berries|bush|mushroom$|roots|sprouts|^fire$|soul_fire|_door$|trapdoor|fence_gate|^bed$|_bed$)/
+
+const canSupport = (blockName) => !NON_SUPPORT.test(String(blockName))
+
+/**
+ * targets: [{ pos:{x,y,z}, name }]   koyulacak bloklar (name = blok adı)
+ * worldSolid(x,y,z) -> bool          dünyada o hücre yaslanılabilir mi
+ * opts.maxPillar: en uzun iskele (varsayılan 24)
+ * dönen: { steps:[{kind:'place', i} | {kind:'scaffold', pos}], cleanup:[pos...] (kırma sırası), unreachable:[i...] }
+ */
+function planBuild(targets, worldSolid, opts = {}) {
+  const maxPillar = opts.maxPillar ?? 24
+  const steps = []
+  const scaffolds = []
+  const unreachable = []
+  const remaining = new Map()
+  targets.forEach((t, i) => remaining.set(key(t.pos.x, t.pos.y, t.pos.z), i))
+  const placedSolid = new Set()
+  const placedAny = new Set()      // destek olmasa da koyulmuş her hedef (hücre dolu)
+  const solid = (x, y, z) => placedSolid.has(key(x, y, z)) || worldSolid(x, y, z)
+  const supported = (p) => DIRS.some(([dx, dy, dz]) => solid(p.x + dx, p.y + dy, p.z + dz))
+
+  const ready = new Set()
+  for (const [k, i] of remaining) if (supported(targets[i].pos)) ready.add(i)
+
+  let last = null
+  const better = (a, b) => {   // önce düşük y, sonra son konuma yakın
+    const pa = targets[a].pos, pb = targets[b].pos
+    if (pa.y !== pb.y) return pa.y < pb.y
+    if (!last) return a < b
+    const da = Math.abs(pa.x - last.x) + Math.abs(pa.z - last.z)
+    const db = Math.abs(pb.x - last.x) + Math.abs(pb.z - last.z)
+    return da !== db ? da < db : a < b
+  }
+
+  const place = (i) => {
+    const t = targets[i]
+    const k = key(t.pos.x, t.pos.y, t.pos.z)
+    remaining.delete(k)
+    ready.delete(i)
+    placedAny.add(k)
+    steps.push({ kind: 'place', i })
+    if (canSupport(t.name)) {
+      placedSolid.add(k)
+      for (const [dx, dy, dz] of DIRS) {
+        const nk = key(t.pos.x + dx, t.pos.y + dy, t.pos.z + dz)
+        if (remaining.has(nk)) ready.add(remaining.get(nk))
+      }
+    }
+    last = t.pos
+  }
+
+  while (remaining.size) {
+    if (ready.size) {
+      let best = null
+      for (const i of ready) if (best === null || better(i, best)) best = i
+      place(best)
+      continue
+    }
+    // yaslanacak komşusu olmayan en alçak hedef: yerden iskele kur
+    let low = null
+    for (const i of remaining.values()) if (low === null || better(i, low)) low = i
+    const t = targets[low]
+    let groundY = null
+    for (let y = t.pos.y - 1; y >= t.pos.y - maxPillar - 1; y--) {
+      if (solid(t.pos.x, y, t.pos.z)) { groundY = y; break }
+    }
+    let blocked = false
+    if (groundY !== null) for (let y = groundY + 1; y < t.pos.y; y++) if (placedAny.has(key(t.pos.x, y, t.pos.z))) blocked = true
+    if (groundY === null || blocked) {
+      unreachable.push(low)
+      remaining.delete(key(t.pos.x, t.pos.y, t.pos.z))
+      continue
+    }
+    for (let y = groundY + 1; y < t.pos.y; y++) {
+      steps.push({ kind: 'scaffold', pos: { x: t.pos.x, y, z: t.pos.z } })
+      scaffolds.push({ x: t.pos.x, y, z: t.pos.z })
+      placedSolid.add(key(t.pos.x, y, t.pos.z))
+    }
+    ready.add(low)
+  }
+  // iskele sütunları: yukarıdan aşağı kır
+  const cleanup = [...scaffolds].sort((a, b) => b.y - a.y)
+  return { steps, cleanup, unreachable }
+}
+
+return { planBuild, canSupport, NON_SUPPORT, key }
+
+})()
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const ok = (msg) => ({ ok: true, msg })

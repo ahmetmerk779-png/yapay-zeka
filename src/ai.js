@@ -32,11 +32,13 @@ async function listModels(apiKey) {
 }
 
 // Sohbet tamamlama. json=true -> JSON modu (başarısız olursa kendi ayrıştırmamıza düşer)
-const FALLBACK_MODEL = process.env.GROQ_FALLBACK_MODEL || 'llama-3.1-8b-instant'   // ayrı (daha geniş) token limiti olan yedek model
+// Yedek model SADECE ortam değişkeniyle verilirse kullanılır (GROQ_FALLBACK_MODEL=...). Hesabında olmayan model hata verir.
+let FALLBACK_MODEL = process.env.GROQ_FALLBACK_MODEL || ''
 
 async function chat({ apiKey, model, messages, json = false, maxTokens = 900, temperature = 0.7 }) {
   let useJson = json
   let usedFallback = false
+  const origModel = model
   for (let attempt = 0; attempt < 5; attempt++) {
     const body = { model, messages, max_tokens: maxTokens, temperature }
     if (useJson) body.response_format = { type: 'json_object' }
@@ -49,7 +51,7 @@ async function chat({ apiKey, model, messages, json = false, maxTokens = 900, te
     if (res.status === 429) {
       const retryAfter = Number(res.headers.get('retry-after')) || 3
       // Uzun bekleme = günlük/dakikalık token limiti doldu: yedek modele geç
-      if ((retryAfter > 10 || attempt >= 1) && !usedFallback && model !== FALLBACK_MODEL) {
+      if (FALLBACK_MODEL && (retryAfter > 10 || attempt >= 1) && !usedFallback && model !== FALLBACK_MODEL) {
         usedFallback = true
         model = FALLBACK_MODEL
         maxTokens = Math.min(maxTokens, 1200)
@@ -64,6 +66,13 @@ async function chat({ apiKey, model, messages, json = false, maxTokens = 900, te
       try { err = JSON.parse(text).error } catch (e) { /* düz metin */ }
       if (err && err.failed_generation) return err.failed_generation   // yine de ayrıştırmayı deneriz
       if (useJson && /response_format|json_object|json mode/i.test(text)) { useJson = false; continue }
+    }
+    if (usedFallback && /model_not_found|does not exist|no access/i.test(text)) {   // yedek model geçersiz: kapat, asıl modele dön
+      FALLBACK_MODEL = ''
+      usedFallback = false
+      model = origModel
+      await sleep(3000)
+      continue
     }
     if (res.status === 401) throw new Error('Groq API anahtarı geçersiz (401)')
     if (res.status === 404 || /model/i.test(text) && res.status === 400) throw new Error(`Model sorunu (${model}): ${text.slice(0, 160)}`)
@@ -117,6 +126,8 @@ Kurallar:
 - Eylem gerekiyorsa say'de ne yapacağını kendi tarzınla kısaca söyle. Sonucu önceden söyleme; sonuç sistem tarafından sana [OLAY] olarak bildirilir.
 - Birden fazla iş varsa actions içine sırayla koy (en fazla ${MAX_ACTIONS}).
 ${opts.strict ? STRICT_RULE : CHAIN_RULE}
+- Odun/ağaç/kütük isteklerinde block olarak "oak_log" yaz (sistem her ağaç türünü kabul eder); "odun topla" için alet ISTEME, ağaç yumrukla kırılır. Alet yokmuş gibi davranma, önce eylemi dene.
+- Görev bitince "serbestim, dolaşırım" gibi kendi kararını söyleme; sadece kısa sonucu söyle ve bekle.
 - MADEN (cevher: kömür, demir, bakır, altın, elmas, redstone, lapis, zümrüt, ancient_debris) için "mine" kullan; "collect" sadece ağaç/kum/taş gibi yakındaki bloklar içindir. mine, cevher yoksa kendi inip tünel kazarak arar. Eşya olarak ham maden (raw_iron) istenirse block iron_ore yaz, sonra smelt öner.
 - EV için "house" kullan (size small/medium/large). Parametre vermezsen envanterdeki en bol blok seçilir. Malzeme yetersizse sistem eksikleri söyler: o zaman oyuncuya say ya da (izin varsa) odun/taş topla (collect oak_log -> craft oak_planks). Özel tasarımlı ev için build/fill kullan.
 - Madenler için alet gerekir: taş/kömür -> en az wooden_pickaxe, demir/bakır/lapis -> stone_pickaxe, elmas/altın/redstone/zümrüt -> iron_pickaxe.

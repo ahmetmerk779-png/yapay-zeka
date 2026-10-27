@@ -510,7 +510,8 @@ class BotInstance {
     const hist = this.history.map((m, i) => (m.role === 'user' && i < this.history.length - 1
       ? { role: 'user', content: m.content.replace(/^\[DURUM\] .*\n/, '') }
       : m))
-    let messages = [{ role: 'system', content: this.system }, ...hist]
+    const system = ai.buildSystem(this.cfg.name, { strict: this.cfg.strict !== false, query: `${this.lastUserQuery || ''} ${this.lastQuery || ''}` })
+    let messages = [{ role: 'system', content: system }, ...hist]
     let lastPlan = null
     for (let attempt = 0; attempt < 2; attempt++) {
       const text = await ai.chat({ apiKey: this.cfg.groqKey, model: this.cfg.model, messages, json: true, maxTokens: 1200 })
@@ -544,6 +545,8 @@ class BotInstance {
   async processMessage(label, senderPlayer, message, trusted) {
     if (!this.cfg.groqKey) { this.log('warn', 'Groq anahtarı yok, doğal dil kapalı.'); return }
     if (!this.ready) return
+    this.lastQuery = message
+    if (label !== 'Sistem') this.lastUserQuery = message
     this.history.push({ role: 'user', content: `[DURUM] ${JSON.stringify(this.snapshot(label, trusted, message))}\n[${label}] ${message}` })
     const t0 = Date.now()
     let plan

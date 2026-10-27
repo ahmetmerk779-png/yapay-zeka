@@ -1646,7 +1646,7 @@ async function web_search(inst, a) {
 // ---- kristal PvP (deneysel, basit sezgisel)
 async function crystal_pvp(inst, a, { cancelled }) {
   const bot = inst.bot
-  if (!inst.cfg.allowPvp) return fail('oyunculara saldırı kapalı')
+  if (!inst.cfg.allowPvp && !a.friendly) return fail('oyunculara saldırı kapalı')
   if (!findInv(inst, 'end_crystal')) return fail('envanterimde end_crystal yok')
   if (!playerEntity(inst, a.target)) return fail(`${a.target} görüş alanımda değil`)
   const baseIds = ['obsidian', 'bedrock'].map((n) => inst.mcData.blocksByName[n]).filter(Boolean).map((b) => b.id)
@@ -1829,13 +1829,233 @@ function houseEntries(a, mcData, inst) {
 
 async function house(inst, a, { cancelled }) { return runBuild(inst, houseEntries(a, inst.mcData, inst), a.offset, cancelled) }
 
+// ---------------------------------------------------------------- PvP / düello
+// Sezgisel bir dövüş motoru: bekleme süresine göre vuruş, kritik (düşerken) vuruş, W-tap, yan adım,
+// balta ile kalkan kırma, totem, altın elma, iksir (pot), ok (UHC), rüzgar topu + mace smash.
+// Gerçek bir PvP oyuncusunun refleks ve ping hesabı yoktur; "iyi bir başlangıç seviyesi" gibi düşün.
+const PVP_WEAPONS = {
+  sword: ['netherite_sword', 'diamond_sword', 'iron_sword', 'stone_sword', 'golden_sword', 'wooden_sword'],
+  axe: ['netherite_axe', 'diamond_axe', 'iron_axe', 'stone_axe', 'golden_axe', 'wooden_axe'],
+  mace: ['mace'],
+  spear: ['netherite_spear', 'diamond_spear', 'iron_spear', 'copper_spear', 'stone_spear', 'golden_spear', 'wooden_spear'],
+}
+// Vuruş bekleme süresi (ms): kılıç 1.6 hız ~625ms, balta ~1000-1250ms, mace ~1670ms. Mızrak değerleri tahmindir.
+const PVP_COOLDOWN = { sword: 640, axe: 1050, mace: 1700, spear: 900 }
+
+const pvpPotText = (it) => { try { return JSON.stringify(it.components || it.nbt || it.name).toLowerCase() } catch (e) { return it.name } }
+
+async function duel(inst, a, { cancelled }) {
+  const bot = inst.bot
+  let style = a.style
+  if (style === 'crystal') return crystal_pvp(inst, { target: a.target, seconds: a.seconds, friendly: a.friendly }, { cancelled })
+  if (!a.friendly && !inst.cfg.allowPvp) return fail('oyunculara saldırı kapalı (panelden aç)')
+  if (!playerEntity(inst, a.target)) return fail(`${a.target} görüş alanımda değil`)
+  const noteParts = []
+  const has = (n) => !!findInv(inst, n)
+  const weaponOf = (kind) => PVP_WEAPONS[kind].map((n) => findInv(inst, n)).find(Boolean)
+  // Stil -> birincil silah
+  if (style === 'elytra_mace') { style = 'mace'; noteParts.push('elytra ile uçarak mace henüz yok, yerden mace yapıyorum') }
+  if (style === 'auto') style = weaponOf('mace') ? 'mace' : weaponOf('spear') ? 'spear' : weaponOf('sword') ? 'sword' : weaponOf('axe') ? 'axe' : 'sword'
+  const primary = ['mace', 'spear', 'axe'].includes(style) ? style : 'sword'
+  if (!weaponOf(primary)) {
+    const alt = ['sword', 'axe', 'mace', 'spear'].find((k) => weaponOf(k))
+    if (!alt) return fail(`${style} için silahım yok (envanterimde kılıç/balta/mace/mızrak yok)`)
+    noteParts.push(`${primary} yok, ${alt} ile dövüşüyorum`)
+    style = alt === primary ? style : alt
+  }
+  const kind = weaponOf(primary) ? primary : ['sword', 'axe', 'mace', 'spear'].find((k) => weaponOf(k))
+
+  if (inst.autoArmor) await inst.autoArmor().catch(() => {})
+  let dead = false
+  let iDied = false
+  const onDead = (e) => { if (e && e.username === a.target) dead = true }
+  const onDeath = () => { iDied = true }
+  bot.on('entityDead', onDead)
+  bot.on('death', onDeath)
+
+  const st = { hits: 0, crits: 0, smashes: 0, ate: 0, healed: 0, arrows: 0, shieldBreaks: 0 }
+  const t = { hit: 0, eat: 0, heal: 0, bow: 0, launch: 0, strafe: 0, jump: 0, wind: 0 }
+  let strafeDir = 'left'
+  let wantCritAt = 0
+  let airborneLaunch = null
+  let followed = null
+  let lost = 0
+  const end = Date.now() + a.seconds * 1000
+  const equipKind = async (k) => {
+    const w = weaponOf(k)
+    if (w && (!bot.heldItem || bot.heldItem.name !== w.name)) { try { await bot.equip(w, 'hand') } catch (e) { /* meşgul */ } }
+    return w
+  }
+  const releaseMove = () => { for (const c of ['forward', 'back', 'left', 'right', 'sprint']) bot.setControlState(c, false) }
+  const lookAtTarget = (te, hf = 0.85) => bot.lookAt(te.position.offset(0, (te.height || 1.8) * hf, 0), true)
+  const hdist = (te) => Math.hypot(te.position.x - bot.entity.position.x, te.position.z - bot.entity.position.z)
+
+  // Başlangıç iksirleri (pot): güç, hız, ateş direnci
+  if (style === 'pot') {
+    const te0 = playerEntity(inst, a.target)
+    if (te0 && hdist(te0) > 7) {
+      for (const want of ['strength', 'swiftness|speed', 'fire_resistance']) {
+        const p = bot.inventory.items().find((i) => i.name === 'potion' && new RegExp(want).test(pvpPotText(i)))
+        if (p && !cancelled()) { try { await bot.equip(p, 'hand'); await bot.consume(); st.ate++ } catch (e) { /* yoksay */ } }
+      }
+    }
+  }
+
+  try {
+    while (!cancelled() && !dead && !iDied && Date.now() < end) {
+      const te = playerEntity(inst, a.target)
+      if (!te) { releaseMove(); if (++lost > 60) break; await sleep(100); continue }
+      lost = 0
+      const now = Date.now()
+      const hp = bot.health
+      const dist = bot.entity.position.distanceTo(te.position)
+      const hd = hdist(te)
+      const dy = te.position.y - bot.entity.position.y
+
+      // Totem her zaman yan elde
+      const off = bot.inventory.slots[45]
+      const totem = findInv(inst, 'totem_of_undying')
+      if (totem && (!off || off.name !== 'totem_of_undying')) { try { await bot.equip(totem, 'off-hand') } catch (e) { /* sürüm */ } }
+
+      // --- iyileşme
+      const apple = findInv(inst, 'enchanted_golden_apple') || findInv(inst, 'golden_apple')
+      const healLimit = style === 'uhc' ? 12 : 9
+      if (apple && hp <= healLimit && now - t.eat > 3500 && (dist > 4.2 || hp <= 6)) {
+        t.eat = now; releaseMove()
+        try { await bot.equip(apple, 'hand'); await bot.consume(); st.ate++ } catch (e) { /* kesildi */ }
+        continue
+      }
+      if (style === 'pot' && hp <= 9 && now - t.heal > 1300) {
+        const sp = bot.inventory.items().find((i) => i.name === 'splash_potion' && /healing|instant_health/.test(pvpPotText(i)))
+        if (sp) {
+          t.heal = now
+          try { await bot.equip(sp, 'hand'); await bot.lookAt(bot.entity.position.offset(0, -1, 0), true); bot.activateItem(); st.healed++ } catch (e) { /* yoksay */ }
+          await sleep(120)
+          continue
+        }
+      }
+
+      // --- uzak mesafe: ok (UHC) ya da yaklaş
+      if (style === 'uhc' && dist > 9 && dist < 30 && now - t.bow > 1700 && has('bow') && has('arrow')) {
+        t.bow = now; releaseMove()
+        try {
+          await bot.equip(findInv(inst, 'bow'), 'hand')
+          const lead = dist / 26   // ok uçuş süresi tahmini (sn)
+          const v = te.velocity || { x: 0, y: 0, z: 0 }
+          await bot.lookAt(te.position.offset(v.x * lead * 20, (te.height || 1.8) * 0.9 + dist * 0.045, v.z * lead * 20), true)
+          bot.activateItem()
+          await sleep(950)
+          bot.deactivateItem()
+          st.arrows++
+        } catch (e) { /* yoksay */ }
+        continue
+      }
+
+      // --- yaklaşma
+      const far = hd > 9 || Math.abs(dy) > 2.5
+      if (far) {
+        if (followed !== te) { bot.pathfinder.setGoal(new goals.GoalFollow(te, 2), true); followed = te }
+        bot.setControlState('sprint', true)
+        await sleep(100)
+        continue
+      }
+      if (followed) { try { bot.pathfinder.stop() } catch (e) { /* yok */ } followed = null }
+
+      // --- silah seçimi (kalkan varsa balta ile kır)
+      let useKind = kind
+      const eq = te.equipment || []
+      const tShield = eq.some((it) => it && it.name === 'shield')
+      if (tShield && weaponOf('axe') && kind !== 'mace') useKind = 'axe'
+      const w = await equipKind(useKind)
+      const cd = PVP_COOLDOWN[useKind]
+
+      // --- mace: rüzgar topuyla havaya çık, düşerek vur (smash)
+      if (useKind === 'mace' && has('wind_charge') && bot.entity.onGround && dist > 2.5 && dist < 14 && now - t.wind > 2200) {
+        t.wind = now
+        try {
+          await bot.equip(findInv(inst, 'wind_charge'), 'hand')
+          await bot.lookAt(bot.entity.position.offset(0, -1, 0), true)
+          bot.setControlState('jump', true)
+          await sleep(60)
+          bot.activateItem()
+          await sleep(60)
+          bot.setControlState('jump', false)
+          airborneLaunch = { y: bot.entity.position.y, maxY: bot.entity.position.y, at: Date.now() }
+          await equipKind('mace')
+        } catch (e) { /* yoksay */ }
+        continue
+      }
+      if (airborneLaunch) {
+        const y = bot.entity.position.y
+        airborneLaunch.maxY = Math.max(airborneLaunch.maxY, y)
+        await lookAtTarget(te, 0.9)
+        if (hd > 1.2) { bot.setControlState('forward', true); bot.setControlState('sprint', true) } else { bot.setControlState('forward', false) }
+        const fell = airborneLaunch.maxY - y
+        if (!bot.entity.onGround && bot.entity.velocity.y < -0.1 && fell >= 1.5 && dist <= 3.4 && now - t.hit > 250) {
+          bot.attack(te); t.hit = now; st.hits++; st.smashes++
+          airborneLaunch = null
+          releaseMove()
+        } else if (bot.entity.onGround && Date.now() - airborneLaunch.at > 400) {
+          airborneLaunch = null
+          releaseMove()
+        } else if (Date.now() - airborneLaunch.at > 4000) { airborneLaunch = null; releaseMove() }
+        await sleep(40)
+        continue
+      }
+
+      // --- normal yakın dövüş
+      await lookAtTarget(te)
+      const inReach = hd <= 3.0 && Math.abs(dy) < 2.2
+      // yaklaş / mesafeyi koru
+      if (hd > 2.6) { bot.setControlState('forward', true); bot.setControlState('sprint', true) }
+      else { bot.setControlState('forward', hd > 2.0); bot.setControlState('sprint', false) }
+      // yan adım (rastgele aralıkla yön değiştir)
+      if (now - t.strafe > 450 + Math.random() * 700) {
+        t.strafe = now
+        strafeDir = strafeDir === 'left' ? 'right' : 'left'
+        bot.setControlState('left', false); bot.setControlState('right', false)
+        bot.setControlState(strafeDir, true)
+      }
+      // kritik vuruş: bekleme dolmaya yakınken zıpla, düşerken vur
+      const ready = now - t.hit >= cd
+      if (ready && inReach && w) {
+        if (bot.entity.onGround && now - t.jump > 700 && useKind !== 'mace') {
+          bot.setControlState('jump', true)
+          setTimeout(() => bot.setControlState('jump', false), 90)
+          t.jump = now; wantCritAt = now
+        } else if (!bot.entity.onGround && bot.entity.velocity.y < -0.05 || (wantCritAt && now - wantCritAt > 450) || useKind === 'mace') {
+          const crit = !bot.entity.onGround && bot.entity.velocity.y < 0
+          bot.attack(te)
+          t.hit = now; st.hits++; if (crit) st.crits++
+          if (tShield && useKind === 'axe') st.shieldBreaks++
+          wantCritAt = 0
+          // W-tap: sprinti sıfırla ki geri tepme tam çalışsın
+          bot.setControlState('sprint', false)
+          setTimeout(() => { if (!cancelled()) bot.setControlState('sprint', true) }, 110)
+        }
+      }
+      await sleep(40)
+    }
+  } finally {
+    bot.removeListener('entityDead', onDead)
+    bot.removeListener('death', onDeath)
+    releaseMove()
+    try { bot.pathfinder.stop() } catch (e) { /* yok */ }
+  }
+  if (cancelled()) return fail('iptal edildi')
+  const summary = `${st.hits} vuruş (${st.crits} kritik${st.smashes ? `, ${st.smashes} mace smash` : ''}${st.shieldBreaks ? `, ${st.shieldBreaks} kalkan kırma` : ''}), ${st.ate} yemek/iksir${st.healed ? `, ${st.healed} iyileştirme potu` : ''}${st.arrows ? `, ${st.arrows} ok` : ''}`
+  const note = noteParts.length ? ` (${noteParts.join('; ')})` : ''
+  if (iDied) return ok(`öldüm. ${summary}${note}`)
+  return dead ? ok(`${a.target} öldü. ${summary}${note}`) : ok(`süre bitti. ${summary}${note}`)
+}
+
 const EXEC = {
   stop, follow, goto_player, goto: goto_, goto_block, wander, look_at, jump, sneak, set_home, go_home,
   mount, dismount, sleep: sleep_, wake, collect, mine, pickup, tunnel, dig_down, farm, fish, shear, breed,
   attack, guard, shoot, place, break: break_, fill, shelter, equip, drop, give, craft, smelt, eat,
   use_item, store, take, inspect_chest, trade, activate_block, find, chat, command, wait,
   door, enchant, anvil, fill_bottles, brew, drink, nether_portal, build, write_sign,
-  schematic, schematic_info, list_schematics, download_schematic, web_search, crystal_pvp, make_farm, house,
+  schematic, schematic_info, list_schematics, download_schematic, web_search, crystal_pvp, duel, make_farm, house,
 }
 
 async function execute(inst, action, ctx) {

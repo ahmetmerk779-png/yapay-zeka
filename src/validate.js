@@ -80,6 +80,7 @@ const ACTION_DOCS = [
   ['download_schematic', '{"type":"download_schematic","url":"https://.../ev.schem","name":"ev.schem"}', 'oyuncunun verdiği bağlantıdan şematik indir'],
   ['web_search', '{"type":"web_search","query":"minecraft piston door redstone design"}', 'web\'de araştır ve öğren (sonuç sana [ARAŞTIRMA SONUCU] olarak gelir)'],
   ['crystal_pvp', '{"type":"crystal_pvp","target":"OyuncuAdi","seconds":120}', 'oyuncuyla kristal PvP (end_crystal + obsidyen/bedrock gerekir; sadece açıkça istenirse)'],
+  ['duel', '{"type":"duel","target":"sender","style":"sword","seconds":120}', 'oyuncuyla PvP düellosu ("benimle pvp at" = target sender). style: sword/axe/mace/spear/pot(netherite pot)/uhc/smp/crystal/elytra_mace/auto. Kritik, W-tap, yan adım, kalkan kırma, totem, altın elma, iksir, ok, rüzgar topu+mace içerir'],
   ['make_farm', '{"type":"make_farm","crop":"wheat","radius":4}', 'önünde çalışan tarla kur (çapa, su kovası ve tohum gerekir)'],
   ['house', '{"type":"house","size":"small","wall":"oak_planks"}', 'ev kur (size small=5x5/medium=7x7/large=9x9; wall/floor/roof/glass/door opsiyonel). Malzeme: small ~ 25 zemin + ~44 duvar + 25 çatı blok; kapı/cam/meşale yoksa atlanır. Parametre vermezsen envanterdeki en bol blok seçilir'],
 ]
@@ -101,7 +102,7 @@ const TYPE_ALIASES = {
   ride: 'mount', unmount: 'dismount', locate: 'find', search: 'find', scan: 'find',
   harvest: 'farm', crops: 'farm', cook: 'smelt', bow: 'shoot',
   pick_up: 'pickup', collect_items: 'pickup',
-  portal: 'nether_portal', enchanting: 'enchant', brewing: 'brew', potion: 'brew', construct: 'build',
+  pvp: 'duel', spar: 'duel', fight_me: 'duel', duello: 'duel', portal: 'nether_portal', enchanting: 'enchant', brewing: 'brew', potion: 'brew', construct: 'build',
   build_house: 'house', make_house: 'house', sign: 'write_sign', open_door: 'door', trapdoor: 'door', gate: 'door',
   schem: 'schematic', paste: 'schematic', load_schematic: 'schematic', litematic: 'schematic', build_schematic: 'schematic',
   schematic_list: 'list_schematics', schematics: 'list_schematics', research: 'web_search', google: 'web_search', learn: 'web_search',
@@ -348,7 +349,7 @@ function validateActions(inst, rawActions, ctx = {}) {
       if (exact) {
         if (!inst.cfg.allowPvp) throw new Error('oyunculara saldırı kapalı')
         if (exact === ctx.senderPlayer || (inst.cfg.owner && exact.toLowerCase() === inst.cfg.owner.toLowerCase())) {
-          throw new Error('sahibine / komutu verene saldırılamaz')
+          throw new Error('komutu verene attack ile saldırılmaz; düello için duel eylemini kullan')
         }
         return { kind: 'player', name: exact, count: 1 }
       }
@@ -490,11 +491,27 @@ function validateActions(inst, rawActions, ctx = {}) {
       return { query: q.slice(0, 200) }
     },
     crystal_pvp: (a) => {
-      if (!inst.cfg.allowPvp) throw new Error('oyunculara saldırı kapalı (panelden aç)')
-      const target = h.exactPlayer(a.target)
-      if (!target) throw new Error(`"${a.target}" adlı oyuncu çevrimiçi değil`)
-      if (target === ctx.senderPlayer || (inst.cfg.owner && target.toLowerCase() === inst.cfg.owner.toLowerCase())) throw new Error('sahibine / komutu verene saldırılamaz')
-      return { target, seconds: h.int(a.seconds, 120, 10, 600, 'seconds') }
+      const target = h.player(a.target)
+      const friendly = target === ctx.senderPlayer || !!(inst.cfg.owner && target.toLowerCase() === inst.cfg.owner.toLowerCase())
+      if (!friendly && !inst.cfg.allowPvp) throw new Error('oyunculara saldırı kapalı (panelden aç)')
+      if (!onlinePlayers().includes(target)) throw new Error(`"${a.target}" adlı oyuncu çevrimiçi değil`)
+      return { target, friendly, seconds: h.int(a.seconds, 120, 10, 600, 'seconds') }
+    },
+    duel: (a) => {
+      const target = h.player(a.target)
+      if (!onlinePlayers().includes(target)) throw new Error(`"${target}" adlı oyuncu çevrimiçi değil`)
+      // Komutu veren / sahip kendi isteğiyle düello yapıyorsa panel izni gerekmez; başkasına saldırı için gerekir
+      const friendly = target === ctx.senderPlayer || !!(inst.cfg.owner && target.toLowerCase() === inst.cfg.owner.toLowerCase())
+      if (!friendly && !inst.cfg.allowPvp) throw new Error('başka oyunculara saldırı kapalı (panelden "Oyunculara saldırı"yı aç)')
+      const raw = normName(a.style || 'auto').replace(/[\s-]+/g, '_')
+      const STYLE = {
+        sword: 'sword', kilic: 'sword', kılıç: 'sword', axe: 'axe', balta: 'axe', sword_axe: 'sword',
+        mace: 'mace', spear: 'spear', mizrak: 'spear', mızrak: 'spear',
+        pot: 'pot', net_pot: 'pot', netherite_pot: 'pot', nethpot: 'pot', nethpvp: 'pot', potion: 'pot',
+        uhc: 'uhc', smp: 'smp', diamond_smp: 'smp', crystal: 'crystal', kristal: 'crystal', cpvp: 'crystal',
+        elytra_mace: 'elytra_mace', eltyra_mace: 'elytra_mace', elytra: 'elytra_mace', auto: 'auto',
+      }
+      return { target, friendly, style: STYLE[raw] || 'auto', seconds: h.int(a.seconds, 120, 10, 900, 'seconds') }
     },
     make_farm: (a) => {
       const crop = { wheat: 'wheat', buğday: 'wheat', bugday: 'wheat', carrot: 'carrots', carrots: 'carrots', havuç: 'carrots', havuc: 'carrots', potato: 'potatoes', potatoes: 'potatoes', patates: 'potatoes', beetroot: 'beetroots', beetroots: 'beetroots', pancar: 'beetroots' }[normName(a.crop || 'wheat')]

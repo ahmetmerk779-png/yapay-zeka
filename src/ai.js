@@ -39,9 +39,15 @@ async function chat({ apiKey, model, messages, json = false, maxTokens = 900, te
   let useJson = json
   let usedFallback = false
   const origModel = model
+  let noReason = false
   for (let attempt = 0; attempt < 5; attempt++) {
     const body = { model, messages, max_tokens: maxTokens, temperature }
     if (useJson) body.response_format = { type: 'json_object' }
+    // Düşünen modellerde (qwen3, gpt-oss) düşünme tokenleri limiti hızla doldurur: kıs
+    if (!noReason) {
+      if (/qwen/i.test(model)) body.reasoning_effort = 'none'
+      else if (/gpt-oss/i.test(model)) body.reasoning_effort = 'low'
+    }
     const res = await request('/chat/completions', { apiKey, method: 'POST', body })
     if (res.ok) {
       const data = await res.json()
@@ -61,6 +67,7 @@ async function chat({ apiKey, model, messages, json = false, maxTokens = 900, te
       await sleep(Math.min(retryAfter, 12) * 1000)
       continue
     }
+    if (res.status === 400 && !noReason && /reasoning_effort|reasoning/i.test(text)) { noReason = true; continue }
     if (res.status === 400) {
       let err = null
       try { err = JSON.parse(text).error } catch (e) { /* düz metin */ }
@@ -109,42 +116,79 @@ Emoji kullanma. Mesajların Minecraft sohbetine uygun, en fazla yaklaşık 150 k
 Yapamayacağın bir şeyi yapabilirmiş gibi davranma, durumu uydurma.`
 }
 
+// Token tasarrufu: sistem istemine sadece mesajla ilgili eylemler ve kurallar girer.
+const CORE_ACTIONS = new Set(['stop', 'follow', 'goto_player', 'goto', 'goto_block', 'wander', 'look_at', 'collect', 'mine', 'craft', 'equip', 'attack', 'chat', 'eat', 'drop', 'give', 'wait', 'find', 'place', 'break'])
+const ACTION_KEYS = [
+  [/pvp|d[uü]ell?o|d[oö]v[uü][sş]|sava[sş]|kristal|crystal|mace|spear|m[ıi]zrak|balta|\baxe|k[ıi]l[ıi][cç]|sword|uhc|smp|\bpot\b|sald[ıi]r|fight|spar/i, ['duel', 'crystal_pvp', 'shoot', 'guard']],
+  [/\bev\b|bar[ıi]nak|yap\b|yap[ıi]|kur\b|kurul|build|fill|duvar|kap[ıi]|door|house|shelter|in[sş]a|doldur|temizle/i, ['house', 'fill', 'shelter', 'build', 'door']],
+  [/tarla|farm|hasat|[cç]iftlik|hayvan|koyun|bal[ıi]k|fish|breed|shear|yem/i, ['farm', 'make_farm', 'breed', 'shear', 'fish']],
+  [/f[ıi]r[ıi]n|erit|pi[sş]ir|smelt|cook/i, ['smelt']],
+  [/b[uü]y[uü]|enchant|[oö]rs|anvil|iksir|brew|simya|potion|portal|nether|[sş]i[sş]e|drink/i, ['enchant', 'anvil', 'brew', 'drink', 'fill_bottles', 'nether_portal']],
+  [/[sş]ema|schem|litem|\.nbt/i, ['schematic', 'schematic_info', 'list_schematics', 'download_schematic']],
+  [/[oö][gğ]ren|nas[ıi]l|ara[sş]t[ıi]r|search|tarif/i, ['web_search']],
+  [/sand[ıi]k|chest|store|take|koy|\bal\b|envanter/i, ['store', 'take', 'inspect_chest']],
+  [/k[oö]yl[uü]|takas|trade|sat[ıi]n/i, ['trade']],
+  [/t[uü]nel|tunnel|kaz|a[sş]a[gğ][ıi]|dig|yerdeki|pickup/i, ['tunnel', 'dig_down', 'pickup']],
+  [/n[oö]bet|koru|guard|ok at|shoot|yay/i, ['guard', 'shoot']],
+  [/\bbin\b|mount|uyu|sleep|yatak|home|eve\b|nokta|kaydet|uyan/i, ['mount', 'dismount', 'sleep', 'wake', 'set_home', 'go_home']],
+  [/etkile|kol\b|lever|buton|button|tabela|sign|komut|command|z[ıi]pla|jump|[cç][oö]mel|sneak|kullan/i, ['activate_block', 'write_sign', 'use_item', 'command', 'jump', 'sneak']],
+]
+
+function pickActions(query) {
+  const set = new Set(CORE_ACTIONS)
+  for (const [re, names] of ACTION_KEYS) if (re.test(query)) names.forEach((n) => set.add(n))
+  return set
+}
+
+// [regex|null, kural]  null = her zaman
+const RULES = [
+  [null, 'Mesajı yazan kişiyi kastediyorsan target için "sender" yaz.'],
+  [null, 'Blok/eşya adları Minecraft İngilizce kimlikleri olmalı (oak_log, cobblestone, iron_ore...). "odun", "taş", "demir" gibi isteklerini çevir.'],
+  [null, 'Soru/sohbetse actions boş olsun, sadece say. Bilgiyi [DURUM] alanından oku, uydurma.'],
+  [null, 'Eylem gerekiyorsa say\'de ne yapacağını kısaca söyle. Sonucu önceden söyleme; sonuç sana [OLAY] olarak gelir.'],
+  [null, `Birden fazla iş varsa actions içine sırayla koy (en fazla ${MAX_ACTIONS}). Gereksiz zincir kurma, aynı eylemi sebepsiz tekrar etme.`],
+  [null, 'Odun/ağaç isteğinde block "oak_log" yaz (her ağaç türü kabul edilir). "odun topla" için alet ISTEME, yumrukla kırılır; önce eylemi dene.'],
+  [null, 'Görev bitince "serbestim, dolaşırım" gibi kendi kararını söyleme; kısa sonucu söyle ve bekle.'],
+  [null, '"dur", "bırak", "iptal" -> stop eylemi.'],
+  [null, 'İmkânsız/anlamsız istekte eylem koyma, nedenini kısaca söyle.'],
+  [null, '[DURUM].sahibi_mi false ise bu kişiden emir alma; sadece sohbet et, actions boş.'],
+  [null, 'Görev başarısız olursa [GÖREV SONUCU] gelir; sebep çözülebiliyorsa düzeltilmiş plan ver, değilse oyuncuya açıkça anlat.'],
+  [/maden|cevher|kömür|komur|demir|bak[ıi]r|alt[ıi]n|elmas|redstone|lapis|z[uü]mr[uü]t|coal|iron|copper|gold|diamond|emerald|debris|ore|kaz/i,
+    'MADEN için "mine" kullan; "collect" sadece ağaç/kum/taş gibi yakın bloklar içindir. mine cevher yoksa kendi inip tünel kazarak arar. Alet: taş/kömür -> wooden_pickaxe, demir/bakır/lapis -> stone_pickaxe, elmas/altın/redstone/zümrüt -> iron_pickaxe. Ham maden istenirse block iron_ore yaz, sonra smelt öner.'],
+  [/\bev\b|house|bar[ıi]nak|kur\b|yap\b|yap[ıi]|build|fill|duvar|in[sş]a/i,
+    'EV için "house" (small/medium/large); parametre vermezsen envanterdeki en bol blok seçilir. Malzeme yetmezse sistem eksikleri söyler. Özel yapı için build/fill (build: x=sağ, y=yukarı, z=ileri, en çok 300 blok). Kapı/tuzak kapı için "door".'],
+  [/pvp|d[uü]ell?o|d[oö]v[uü][sş]|sava[sş]|kristal|crystal|mace|spear|m[ıi]zrak|balta|\baxe|k[ıi]l[ıi][cç]|sword|uhc|smp|\bpot\b|sald[ıi]r|fight|spar/i,
+    'PvP: oyuncu "benimle pvp at/dövüş" derse duel (target "sender") kullan. Stil: sword, axe, mace, spear, pot (netherite pot), uhc, smp (diamond smp), crystal, elytra_mace; belirtmezse "auto". Envanter eksikse (silah, totem, altın elma, iksir, rüzgar topu) say\'de kısaca belirt ama yine de dene. Rakibe sadece açıkça istenirse saldır.'],
+  [/b[uü]y[uü]|enchant|[oö]rs|anvil|iksir|brew|simya|potion|nether|portal/i,
+    'Büyü: enchanting_table + lapis_lazuli + XP (enchant). İksir: fill_bottles -> brew nether_wart -> brew hedef malzeme -> drink; blaze_powder yakıt şart. Nether portalı: 12 obsidian + flint_and_steel (nether_portal); obsidyen için diamond_pickaxe.'],
+  [/redstone|piston|kol\b|lever|tekrarlay|repeater/i,
+    'Redstone: fill/place ile redstone, lever, repeater, piston koy; yön gerekiyorsa facing ekle. Karmaşık devrede başarı garanti değil, dürüst ol.'],
+  [/[sş]ema|schem|litem|\.nbt/i,
+    'Şematik: ad belli değilse list_schematics, malzeme için schematic_info, kurmak için schematic. Yapı için asla command/setblock kullanma.'],
+  [/yiyecek|ac[ıi]k|yemek|tarla|farm|hasat/i,
+    'Yiyecek için olgun ekin ya da av gerekir: farm, attack cow/pig/chicken, smelt.'],
+  [/[oö][gğ]ren|nas[ıi]l|ara[sş]t[ıi]r|tarif/i,
+    'Bilmediğin tarif/mekanik/yapı için web_search kullan; sonuç [ARAŞTIRMA SONUCU] olarak gelir.'],
+]
+
 function buildSystem(name, opts = {}) {
-  const docs = ACTION_DOCS.map(([, ex, desc]) => `- ${ex}  -> ${desc}`).join('\n')
+  const q = String(opts.query || '')
+  const want = pickActions(q)
+  const docs = ACTION_DOCS.filter(([t]) => want.has(t)).map(([, ex, desc]) => `- ${ex} -> ${desc}`).join('\n')
+  const others = ACTION_DOCS.filter(([t]) => !want.has(t)).map(([t]) => t).join(', ')
+  const rules = RULES.filter(([re]) => !re || re.test(q)).map(([, r]) => `- ${r}`).join('\n')
   return `${persona(name)}
 
-Her mesajda SADECE tek bir JSON nesnesi döndür. Başka metin, markdown veya açıklama yazma:
-{"say": "oyuncuya söyleyeceğin doğal cümle (boş olabilir)", "actions": [ ...eylemler... ]}
+Her mesajda SADECE tek bir JSON nesnesi döndür, başka metin/markdown yazma:
+{"say": "oyuncuya doğal cümle (boş olabilir)", "actions": [ ...eylemler... ]}
 
-Kullanabileceğin eylemler (type alanı ve parametreler):
+Eylemler:
 ${docs}
+Diğer geçerli eylem tipleri (ilgili istek gelirse kullan, parametreleri mantıkla ver): ${others}
 
 Kurallar:
-- Mesajı yazan kişiyi kastediyorsan target için "sender" yaz.
-- Blok ve eşya adları Minecraft'ın İngilizce kimlikleri olmalı (oak_log, cobblestone, iron_ore, diamond_pickaxe...). "odun", "taş", "demir" gibi isteklerini çevir.
-- Soru ya da sohbetse actions boş olsun, sadece say'i doldur. Bilgiyi [DURUM] alanından oku, uydurma.
-- Eylem gerekiyorsa say'de ne yapacağını kendi tarzınla kısaca söyle. Sonucu önceden söyleme; sonuç sistem tarafından sana [OLAY] olarak bildirilir.
-- Birden fazla iş varsa actions içine sırayla koy (en fazla ${MAX_ACTIONS}).
-${opts.strict ? STRICT_RULE : CHAIN_RULE}
-- Odun/ağaç/kütük isteklerinde block olarak "oak_log" yaz (sistem her ağaç türünü kabul eder); "odun topla" için alet ISTEME, ağaç yumrukla kırılır. Alet yokmuş gibi davranma, önce eylemi dene.
-- Görev bitince "serbestim, dolaşırım" gibi kendi kararını söyleme; sadece kısa sonucu söyle ve bekle.
-- MADEN (cevher: kömür, demir, bakır, altın, elmas, redstone, lapis, zümrüt, ancient_debris) için "mine" kullan; "collect" sadece ağaç/kum/taş gibi yakındaki bloklar içindir. mine, cevher yoksa kendi inip tünel kazarak arar. Eşya olarak ham maden (raw_iron) istenirse block iron_ore yaz, sonra smelt öner.
-- EV için "house" kullan (size small/medium/large). Parametre vermezsen envanterdeki en bol blok seçilir. Malzeme yetersizse sistem eksikleri söyler: o zaman oyuncuya say ya da (izin varsa) odun/taş topla (collect oak_log -> craft oak_planks). Özel tasarımlı ev için build/fill kullan.
-- Madenler için alet gerekir: taş/kömür -> en az wooden_pickaxe, demir/bakır/lapis -> stone_pickaxe, elmas/altın/redstone/zümrüt -> iron_pickaxe.
-- Yiyecek için olgun ekin ya da av gerekir: farm, attack cow/pig/chicken, smelt ile pişirme.
-- İmkânsız ya da anlamsız bir istekse o eylemi koyma, nedenini say'de doğal şekilde anlat.
-- "dur", "bırak", "iptal" gibi isteklerde stop eylemi ver.
-- Kısa bir yanıt yeterliyse eylem ekleme. Gereksiz eylem zinciri kurma. Aynı eylemi sebepsiz tekrar etme.
-- Yapı kurarken "build" kullan: x=sağ, y=yukarı, z=ileri (botun baktığı yön). Malzeme sayısını envantere göre ayarla; yoksa önce topla/üret. Küçük/basit yapılarda fill ve shelter yeterli. Büyük yapıyı birden fazla build'e böl.
-- Ev örneği: oak_planks ile fill(hollow) -> kapı için break/place oak_door -> torch yerleştir. Kapı ve tuzak kapı için "door" eylemini kullan.
-- Büyü: enchanting_table + lapis_lazuli + yeterli XP gerekir (enchant). Örs için anvil. İksir için sırayla: fill_bottles -> brew nether_wart (awkward) -> brew hedef malzeme -> drink. Simya için blaze_powder yakıtı şart.
-- Nether portalı için 12 obsidian + flint_and_steel gerekir (nether_portal). Obsidyen kazmak için diamond_pickaxe lazım.
-- Redstone: fill ya da place ile "redstone" (toz), "lever", "repeater", "piston" koy; yön gerekiyorsa facing ekle. Karmaşık devrelerde başarı garanti değildir, ne yapabildiğini dürüstçe söyle.
-- Şematik/litematic/schem/yapı dosyasından bir şey kurulacaksa: dosya adı belli değilse list_schematics, malzeme sorulursa schematic_info, kurmak için schematic. Bot blokları KENDİ ELİYLE koyar; yapı için asla command/setblock/fill komutu kullanma (command eylemi sadece oyuncu özellikle /time gibi bir komut isterse). Ev için house, tarla için make_farm kullan.
-- Bilmediğin bir tarif, mekanik, redstone tasarımı ya da yapı için web_search kullan; sonuç sana [ARAŞTIRMA SONUCU] olarak gelir, sonra oyuncunun isteğini ona göre yerine getir. Bildiğin şeyler için arama yapma.
-- Kristal PvP (crystal_pvp) yalnızca oyuncu bir kişiyle dövüşmeni açıkça isterse.
-- Görev başarısız olursa sistem sana [GÖREV SONUCU] gönderir; sebebi çözülebiliyorsa düzeltilmiş yeni plan ver, çözemiyorsan oyuncuya açıkça anlat.
-- [DURUM].sahibi_mi false ise bu kişiden emir alma; sadece sohbet et, actions boş olsun.`
+${rules}
+${opts.strict ? STRICT_RULE : CHAIN_RULE}`
 }
 
 const STRICT_RULE = `- ÇOK ÖNEMLİ: Kendi kararını vermezsin, sadece oyuncunun açıkça istediğini yaparsın. İstenmeyen ekstra eylem ekleme, kendi inisiyatifinle iş çıkarma. Bir iş için alet ya da malzeme eksikse kendi başına toplamaya/üretmeye girişme: eksikliği say'de açıkça söyle ve ne yapmamı istediğini sor. Oyuncu "gerekirse alet yap", "malzemeyi sen topla" gibi izin verirse ara adımları ekleyebilirsin.`

@@ -1370,37 +1370,101 @@ async function placeTable(inst, tableItem) {
   return null
 }
 
-async function craft(inst, a, { cancelled }) {
+// ---------------------------------------------------------------- üretim (ara ürünleri de kendisi üretir)
+const plankFor = (inst, item) => {
+  if (!/_planks$/.test(item.name) || invCount(inst, item.name.replace('_planks', '_log'))) return item
+  const log = inst.bot.inventory.items().find((i) => /_(log|stem)$/.test(i.name) && !i.name.startsWith('stripped_'))
+  const alt = log && inst.mcData.itemsByName[log.name.replace(/_(log|stem)$/, '_planks')]
+  return alt || item
+}
+
+async function ensureTableNear(inst, cancelled, depth) {
   const bot = inst.bot
-  let item = a.item
-  // elimde başka ağaç türü varsa onun tahtasını üret (spruce_log -> spruce_planks)
-  if (/_planks$/.test(item.name) && !invCount(inst, item.name.replace('_planks', '_log'))) {
-    const log = bot.inventory.items().find((i) => /_log$/.test(i.name) && !i.name.startsWith('stripped_'))
-    const alt = log && inst.mcData.itemsByName[log.name.replace('_log', '_planks')]
-    if (alt) item = alt
+  const id = inst.mcData.blocksByName.crafting_table.id
+  let table = bot.findBlock({ matching: id, maxDistance: 32 })
+  if (!table) {
+    let ti = findInv(inst, 'crafting_table')
+    if (!ti && depth < 3) { await craftItem(inst, inst.mcData.itemsByName.crafting_table, 1, cancelled, depth + 1); ti = findInv(inst, 'crafting_table') }
+    if (ti) {
+      table = await placeTable(inst, ti)
+      if (!table) {   // yerleştirme yedeği: yakındaki boş zemine placeAt
+        const f = bot.entity.position.floored()
+        for (const [dx, dz] of [[2, 0], [-2, 0], [0, 2], [0, -2], [1, 1], [-1, -1]]) {
+          if ((await placeAt(inst, 'crafting_table', f.offset(dx, 0, dz))) === 'ok') { table = bot.blockAt(f.offset(dx, 0, dz)); break }
+        }
+      }
+    }
   }
+  if (table) await goTo(inst, new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2), { cancelled, retries: 1, timeoutMs: 20000 })
+  return table
+}
+
+const itemNameById = (inst, id) => (inst.mcData.items[id] && inst.mcData.items[id].name) || String(id)
+
+// En az eksiği olan tarifi seç: { recipe, missing:[{id,need,have}] }
+function bestRecipe(inst, item) {
+  const bot = inst.bot
+  const all = bot.recipesAll(item.id, null, true)
+  let best = null
+  for (const r of all) {
+    const missing = []
+    for (const d of r.delta) {
+      if (d.count >= 0) continue
+      const need = -d.count
+      const have = bot.inventory.count(d.id, d.metadata ?? null)
+      if (have < need) missing.push({ id: d.id, need: need - have })
+    }
+    const score = missing.reduce((x, m) => x + m.need, 0)
+    if (!best || score < best.score) best = { recipe: r, missing, score }
+  }
+  return best
+}
+
+async function craftItem(inst, item, count, cancelled, depth) {
+  const bot = inst.bot
+  item = plankFor(inst, item)
+  const start = invCount(inst, item.name)
+  const target = start + count
   let table = null
-  let recipes = bot.recipesFor(item.id, null, 1, null)
-  if (!recipes.length) {
-    table = bot.findBlock({ matching: inst.mcData.blocksByName.crafting_table.id, maxDistance: 32 })
-    if (!table) {
-      const tableItem = findInv(inst, 'crafting_table')
-      if (tableItem) table = await placeTable(inst, tableItem)
+  let lastMissing = null
+  for (let round = 0; round < 8 && invCount(inst, item.name) < target && !cancelled(); round++) {
+    let recipes = bot.recipesFor(item.id, null, 1, null)
+    let useTable = null
+    if (!recipes.length && item.name !== 'crafting_table') {
+      if (!table) table = await ensureTableNear(inst, cancelled, depth)
+      if (table) { useTable = table; recipes = bot.recipesFor(item.id, null, 1, table) }
     }
-    if (table) {
-      await goTo(inst, new goals.GoalNear(table.position.x, table.position.y, table.position.z, 2))
-      recipes = bot.recipesFor(item.id, null, 1, table)
+    if (recipes.length) {
+      const recipe = recipes[0]
+      const per = (recipe.result && recipe.result.count) || 1
+      const times = Math.max(1, Math.ceil((target - invCount(inst, item.name)) / per))
+      try { await bot.craft(recipe, times, useTable) } catch (e) { lastMissing = `üretim hatası: ${e.message}`; break }
+      continue
     }
+    // Tarif için malzeme eksik: eksik malzemeleri ara ürün olarak üretmeyi dene (tahta, çubuk, külçe bloğu...)
+    const best = bestRecipe(inst, item)
+    if (!best || !best.missing.length) { lastMissing = 'uygun tarif yok'; break }
+    lastMissing = best.missing.map((m) => `${m.need}x ${itemNameById(inst, m.id)}`).join(', ')
+    if (depth >= 3) break
+    let progressed = false
+    for (const m of best.missing) {
+      const ing = inst.mcData.items[m.id]
+      if (!ing || !(inst.mcData.recipes[m.id] || []).length) continue
+      const before = invCount(inst, ing.name)
+      await craftItem(inst, ing, m.need, cancelled, depth + 1)
+      if (invCount(inst, ing.name) > before) progressed = true
+    }
+    if (!progressed) break
   }
-  if (!recipes.length) return fail(`${item.name} için malzemem yok ya da yakında crafting_table yok`)
-  const recipe = recipes[0]
-  const per = (recipe.result && recipe.result.count) || 1
-  const times = Math.max(1, Math.ceil(a.count / per))
-  let made = 0
-  for (let i = 0; i < times && !cancelled(); i++) {
-    try { await bot.craft(recipe, 1, table); made += per } catch (e) { break }
-  }
-  return made > 0 ? ok(`${made} adet ${item.name} ürettim`) : fail(`${item.name} üretemedim, malzeme yetmedi`)
+  return { made: invCount(inst, item.name) - start, item, missing: lastMissing }
+}
+
+async function craft(inst, a, { cancelled }) {
+  const r = await craftItem(inst, a.item, a.count, cancelled, 0)
+  if (cancelled()) return fail('iptal edildi')
+  if (r.made >= a.count) return ok(`${r.made} adet ${r.item.name} ürettim`)
+  if (r.made > 0) return ok(`${r.made}/${a.count} adet ${r.item.name} ürettim (malzeme yetmedi${r.missing ? `: eksik ${r.missing}` : ''})`)
+  return fail(`${r.item.name} üretemedim${r.missing ? `, eksik: ${r.missing}` : ''}`)
 }
 
 async function smelt(inst, a, { cancelled }) {
@@ -1900,13 +1964,73 @@ async function download_schematic(inst, a) {
   } finally { clearTimeout(timer) }
 }
 
+// Yerel gerçekler (minecraft-data): tarifler, blok dayanıklılığı/alet, yiyecek. İnternetsiz, hızlı ve doğru.
+function localFacts(inst, q) {
+  const md = inst.mcData
+  if (!md) return ''
+  const text = `${q} ${search.dictTranslate(String(q))}`.toLowerCase().replace(/[^a-z0-9_ ]+/g, ' ')
+  const words = text.split(/\s+/).filter(Boolean)
+  const cands = []
+  for (let i = 0; i < words.length; i++) {
+    for (let n = 3; n >= 1; n--) { if (words.slice(i, i + n).length === n) cands.push(words.slice(i, i + n).join('_')) }
+  }
+  const found = []
+  for (const c of cands) {
+    const it = md.itemsByName[c] || md.blocksByName[c]
+    if (it && !found.some((f) => f.name === it.name) && !['air', 'stone_button'].includes(it.name) && c.length > 2) found.push(it)
+    if (found.length >= 2) break
+  }
+  if (!found.length) return ''
+  const nm = (id) => { const x = id && typeof id === 'object' ? id.id : id; return (md.items[x] && md.items[x].name) || String(x) }
+  const out = []
+  for (const it of found) {
+    const lines = []
+    const recipes = md.recipes && md.recipes[md.itemsByName[it.name] ? md.itemsByName[it.name].id : -1]
+    if (recipes && recipes.length) {
+      recipes.slice(0, 3).forEach((r, i) => {
+        const per = (r.result && r.result.count) || 1
+        if (r.ingredients) {
+          const cnt = {}
+          r.ingredients.forEach((x) => { const k = nm(x); cnt[k] = (cnt[k] || 0) + 1 })
+          lines.push(`Tarif${recipes.length > 1 ? ` ${i + 1}` : ''} (dizilimsiz, ${per} adet verir): ${Object.entries(cnt).map(([k, v]) => `${v}x ${k}`).join(', ')}`)
+        } else if (r.inShape) {
+          const rows = r.inShape.map((row) => row.map((x) => (x === null || x === -1 ? '_' : nm(x))).join(' | ')).join('  //  ')
+          lines.push(`Tarif${recipes.length > 1 ? ` ${i + 1}` : ''} (şekilli, ${per} adet verir): ${rows}`)
+        }
+      })
+    }
+    const bl = md.blocksByName[it.name]
+    if (bl) {
+      const tools = bl.harvestTools ? Object.keys(bl.harvestTools).map((id) => nm(Number(id))).join(', ') : 'alet gerekmez'
+      lines.push(`Blok: dayanıklılık ${bl.hardness}, kırmak için: ${tools}${bl.diggable === false ? ' (kırılamaz)' : ''}`)
+    }
+    const fd = md.foodsByName && md.foodsByName[it.name]
+    if (fd) lines.push(`Yiyecek: ${fd.foodPoints} açlık, doygunluk ${Math.round(fd.saturation * 10) / 10}`)
+    const item = md.itemsByName[it.name]
+    if (item && item.stackSize) lines.push(`Yığın boyutu: ${item.stackSize}`)
+    if (lines.length) out.push(`[Yerel bilgi: ${it.name}] ${lines.join('. ')}`)
+  }
+  return out.join('\n')
+}
+
 async function web_search(inst, a) {
+  const local = (() => { try { return localFacts(inst, a.query) } catch (e) { return '' } })()
+  // Saf tarif sorusu ve yerel tarif bulunduysa interneti beklemeden dön (hızlı ve doğru)
+  if (local.includes('Tarif') && /recipe|craft|tarif|how to make|nas[ıi]l yap[ıi]l[ıi]r|nas[ıi]l [uü]retilir/i.test(a.query) && !a.deep) {
+    if (inst.learn) inst.learn(a.query, local)
+    return { ok: true, msg: `"${a.query}" için yerel tarif bulundu`, data: local.slice(0, 3000) }
+  }
   try {
-    const r = await search.webSearch(a.query, { groqKey: inst.cfg.groqKey, searchModel: inst.cfg.searchModel })
-    if (inst.learn) inst.learn(a.query, r.text)
-    inst.log('ai', `Arama (${r.source}): ${r.text.slice(0, 500).replace(/\s+/g, ' ')}...`)
-    return { ok: true, msg: `"${a.query}" için araştırma tamamlandı (${r.source})`, data: r.text.slice(0, 3000) }
-  } catch (e) { return fail(e.message) }
+    const query = a.topic ? `${a.query} ${a.topic}` : a.query
+    const r = await search.webSearch(query, { groqKey: inst.cfg.groqKey, searchModel: inst.cfg.searchModel, deep: a.deep })
+    const text = [local, r.text].filter(Boolean).join('\n\n')
+    if (inst.learn) inst.learn(a.query, text)
+    inst.log('ai', `Arama (${local ? 'yerel+' : ''}${r.source}): ${text.slice(0, 500).replace(/\s+/g, ' ')}...`)
+    return { ok: true, msg: `"${a.query}" için araştırma tamamlandı (${local ? 'yerel+' : ''}${r.source})`, data: text.slice(0, 3600) }
+  } catch (e) {
+    if (local) { if (inst.learn) inst.learn(a.query, local); return { ok: true, msg: `"${a.query}" için sadece yerel bilgi bulundu (web: ${e.message})`, data: local.slice(0, 3000) } }
+    return fail(e.message)
+  }
 }
 
 // ---- kristal PvP (deneysel, basit sezgisel)

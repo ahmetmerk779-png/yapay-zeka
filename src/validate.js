@@ -101,7 +101,7 @@ const ACTION_DOCS = [
   ['schematic_info', '{"type":"schematic_info","file":"ev.schem"}', 'şematiğin boyutunu ve gereken/eksik malzemeyi söyle'],
   ['list_schematics', '{"type":"list_schematics"}', 'yüklü şematik dosyalarını listele'],
   ['download_schematic', '{"type":"download_schematic","url":"https://.../ev.schem","name":"ev.schem"}', 'oyuncunun verdiği bağlantıdan şematik indir'],
-  ['web_search', '{"type":"web_search","query":"minecraft piston door redstone design"}', 'web\'de araştır ve öğren (sonuç sana [ARAŞTIRMA SONUCU] olarak gelir)'],
+  ['web_search', '{"type":"web_search","query":"how to make a piston door","topic":"redstone","deep":false}', 'Bilmediğin bir şeyi araştır (önce yerel tarif/blok bilgisi, sonra Minecraft Wiki + web). topic: recipe/mechanic/redstone/pvp/build/farm/mob; deep:true = sayfayı derin oku. Sonuç [ARAŞTIRMA SONUCU] olarak gelir'],
   ['crystal_pvp', '{"type":"crystal_pvp","target":"OyuncuAdi","seconds":120}', 'oyuncuyla kristal PvP (end_crystal + obsidyen/bedrock gerekir; sadece açıkça istenirse)'],
   ['duel', '{"type":"duel","target":"sender","style":"sword","seconds":120}', 'oyuncuyla PvP düellosu ("benimle pvp at" = target sender). style: sword/axe/mace/spear/pot(netherite pot)/uhc/smp/crystal/elytra_mace/auto. Kritik, W-tap, yan adım, kalkan kırma, totem, altın elma, iksir, ok, rüzgar topu+mace içerir'],
   ['custom', '{"type":"custom","name":"ag_at","desc":"hedefin ayağına ağ koy","steps":[{"op":"equip","item":"cobweb"},{"op":"look","at":"player","name":"sender"},{"op":"use"}]}', 'LİSTEDE OLMAYAN bir isteği kendi adımlarınla yap. op: equip{item}, use{item?,hold(ms)}, use_on{dx,dy,dz}, look{at:down|up|player|mob,name}, control{state:forward|back|left|right|jump|sprint|sneak,on,ms}, wait{ms}, say{message}, action{action:{mevcut eylem},optional}, repeat{times,steps}, if{cond:{kind:health_below|health_above|food_below|has_item|no_item|on_ground,value|item},then,else}. Başarılı olursa name ile kaydedilir; sonra {"type":"custom","name":"..."} ile tekrar çağrılır (kayıtlı_makrolar listesine bak)'],
@@ -149,6 +149,70 @@ const BLOCK_SYNONYMS = {
   obsidian: 'obsidian', obsidyen: 'obsidian', enchanting_table: 'enchanting_table', büyü_masası: 'enchanting_table', buyu_masasi: 'enchanting_table',
   örs: 'anvil', ors: 'anvil', simya: 'brewing_stand', simya_sehpası: 'brewing_stand', torch: 'torch', meşale: 'torch',
 }
+
+// ---- Ad çözümleme: aileler (taş = tüm taş türleri), bulanık eşleştirme, öneriler
+const ownKeys = (md, kind) => Object.keys(kind === 'block' ? md.blocksByName : kind === 'item' ? md.itemsByName : md.entitiesByName)
+const names = (md, re) => ownKeys(md, 'block').filter((k) => re.test(k))
+const BLOCK_FAMILIES = {
+  taş: ['stone', 'cobblestone', 'andesite', 'diorite', 'granite', 'deepslate', 'cobbled_deepslate', 'tuff', 'blackstone'],
+  tas: ['stone', 'cobblestone', 'andesite', 'diorite', 'granite', 'deepslate', 'cobbled_deepslate', 'tuff', 'blackstone'],
+  stone: ['stone', 'cobblestone', 'andesite', 'diorite', 'granite', 'deepslate', 'cobbled_deepslate', 'tuff', 'blackstone'],
+  rock: ['stone', 'cobblestone', 'andesite', 'diorite', 'granite', 'deepslate', 'cobbled_deepslate', 'tuff'],
+  kaya: ['stone', 'cobblestone', 'andesite', 'diorite', 'granite', 'deepslate', 'tuff'],
+  kum: ['sand', 'red_sand'], sand: ['sand', 'red_sand'],
+  toprak: ['dirt', 'grass_block', 'coarse_dirt', 'podzol', 'rooted_dirt', 'mud', 'dirt_path'], dirt: ['dirt', 'grass_block', 'coarse_dirt', 'podzol', 'rooted_dirt'],
+  çim: ['grass_block'], cim: ['grass_block'], grass: ['grass_block'],
+  yaprak: (md) => names(md, /_leaves$/), leaves: (md) => names(md, /_leaves$/), leaf: (md) => names(md, /_leaves$/),
+  cam: (md) => names(md, /(^glass$|_stained_glass$)/), glass: (md) => names(md, /(^glass$|_stained_glass$)/),
+  yün: (md) => names(md, /_wool$/), yun: (md) => names(md, /_wool$/), wool: (md) => names(md, /_wool$/),
+  tahta: (md) => names(md, /_planks$/), planks: (md) => names(md, /_planks$/),
+  maden: (md) => [...names(md, /_ore$/), 'ancient_debris'], cevher: (md) => [...names(md, /_ore$/), 'ancient_debris'], ore: (md) => [...names(md, /_ore$/), 'ancient_debris'], ores: (md) => [...names(md, /_ore$/), 'ancient_debris'],
+  çiçek: ['dandelion', 'poppy', 'azure_bluet', 'oxeye_daisy', 'cornflower', 'allium', 'blue_orchid', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip', 'lily_of_the_valley', 'sunflower', 'lilac', 'rose_bush', 'peony'],
+  cicek: ['dandelion', 'poppy', 'azure_bluet', 'oxeye_daisy', 'cornflower', 'allium', 'blue_orchid', 'red_tulip', 'orange_tulip', 'white_tulip', 'pink_tulip'], flower: ['dandelion', 'poppy', 'azure_bluet', 'oxeye_daisy', 'cornflower', 'allium', 'blue_orchid'],
+  mantar: ['brown_mushroom', 'red_mushroom', 'brown_mushroom_block', 'red_mushroom_block'], mushroom: ['brown_mushroom', 'red_mushroom'],
+  buz: ['ice', 'packed_ice', 'blue_ice'], ice: ['ice', 'packed_ice', 'blue_ice'], kar: ['snow', 'snow_block', 'powder_snow'], snow: ['snow', 'snow_block'],
+  kumtaşı: ['sandstone', 'red_sandstone'], kumtasi: ['sandstone', 'red_sandstone'], sandstone: ['sandstone', 'red_sandstone'],
+  bitki: ['short_grass', 'tall_grass', 'fern', 'large_fern'], şeker_kamışı: ['sugar_cane'], seker_kamisi: ['sugar_cane'], kamış: ['sugar_cane'],
+  bambu: ['bamboo'], kaktüs: ['cactus'], kaktus: ['cactus'], balkabağı: ['pumpkin'], balkabagi: ['pumpkin'], karpuz: ['melon'], kil: ['clay'],
+  buğday: ['wheat'], bugday: ['wheat'], havuç: ['carrots'], havuc: ['carrots'], patates: ['potatoes'], mercan: (md) => names(md, /coral/),
+  nether: ['netherrack'], netherrack: ['netherrack'], ruh_kumu: ['soul_sand'], cam_levha: (md) => names(md, /glass_pane$/), tuğla: ['bricks', 'stone_bricks'], tugla: ['bricks', 'stone_bricks'],
+}
+
+function lev(a, b) {
+  if (a === b) return 0
+  const m = a.length
+  const n = b.length
+  if (!m) return n
+  if (!n) return m
+  let prev = Array.from({ length: n + 1 }, (_, j) => j)
+  for (let i = 1; i <= m; i++) {
+    const cur = [i]
+    for (let j = 1; j <= n; j++) cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1))
+    prev = cur
+  }
+  return prev[n]
+}
+
+// Adı en yakın geçerli kimliklere eşle: sondaki -s/-es, ön/son ek, içerme, yazım hatası (levenshtein)
+function suggestNames(raw, all, limit = 4) {
+  const n = String(raw).toLowerCase().replace(/[\s-]+/g, '_')
+  const singular = n.replace(/(es|s)$/, '')
+  const scored = []
+  for (const k of all) {
+    let sc = 99
+    if (k === n || k === singular) sc = 0
+    else if (k.startsWith(n) || k.endsWith('_' + n) || k.endsWith(n)) sc = 1 + (k.length - n.length) / 100
+    else if (k.includes(n) || (singular.length > 2 && k.includes(singular))) sc = 2 + (k.length - n.length) / 100
+    else {
+      const d = Math.min(lev(n, k), lev(singular, k))
+      if (d <= Math.max(1, Math.floor(n.length / 4))) sc = 3 + d
+    }
+    if (sc < 99) scored.push([sc, k])
+  }
+  return scored.sort((a, b) => a[0] - b[0]).slice(0, limit).map((x) => x[1])
+}
+const didYouMean = (raw, all) => { const s = suggestNames(raw, all); return s.length ? ` Şunu mu demek istedin: ${s.join(', ')}?` : '' }
+
 const GENERIC_WOOD = new Set(['wood', 'log', 'logs', 'tree', 'trees', 'odun', 'kütük', 'kutuk', 'ağaç', 'agac'])
 
 const ITEM_SYNONYMS = {
@@ -167,7 +231,22 @@ const ITEM_SYNONYMS = {
   tuzak_kapi: 'oak_trapdoor', kapı: 'oak_door', kapi: 'oak_door', iksir: 'potion',
 }
 
+const ITEM_SYNONYMS_EXTRA = {
+  odun_kömürü: 'charcoal', çömlek: 'flower_pot', halat: 'lead', ip: 'string', iplik: 'string', kemik: 'bone', barut: 'gunpowder', deri: 'leather', kağıt: 'paper', kitap: 'book',
+  yumurta: 'egg', süt: 'milk_bucket', sut: 'milk_bucket', şeker: 'sugar', seker: 'sugar', buğday: 'wheat', bugday: 'wheat', havuç: 'carrot', havuc: 'carrot', patates: 'potato',
+  elma_altın: 'golden_apple', altın_elma: 'golden_apple', altin_elma: 'golden_apple', totem: 'totem_of_undying', ender_incisi: 'ender_pearl', pearl: 'ender_pearl', inci: 'ender_pearl',
+  rüzgar_topu: 'wind_charge', ruzgar_topu: 'wind_charge', örümcek_ağı: 'cobweb', ag: 'cobweb', ağ: 'cobweb', gürz: 'mace', mizrak: 'spear', mızrak: 'spear', zırh: 'iron_chestplate',
+  miğfer: 'iron_helmet', migfer: 'iron_helmet', göğüslük: 'iron_chestplate', gogusluk: 'iron_chestplate', pantolon: 'iron_leggings', bot: 'iron_boots', çizme: 'iron_boots', cizme: 'iron_boots',
+  tohum: 'wheat_seeds', fidan: 'oak_sapling', kemik_tozu: 'bone_meal', elytra: 'elytra', roket: 'firework_rocket', havai_fişek: 'firework_rocket', tnt: 'tnt', merdiven: 'ladder',
+  çit: 'oak_fence', cit: 'oak_fence', levha: 'oak_slab', basamak: 'oak_stairs', cam: 'glass', yün: 'white_wool', yun: 'white_wool', boya: 'white_dye', harita: 'map', pusula: 'compass', saat: 'clock',
+  tüy: 'feather', tuy: 'feather', kömür_blok: 'coal_block', demir_külçe: 'iron_ingot', altın_külçe: 'gold_ingot', bakır: 'copper_ingot', bakir: 'copper_ingot', elmas_kazma: 'diamond_pickaxe',
+}
+for (const [k, v] of Object.entries(ITEM_SYNONYMS_EXTRA)) if (!ITEM_SYNONYMS[k]) ITEM_SYNONYMS[k] = v
+
 const MOB_SYNONYMS = {
+  zombiler: 'zombie', zombilere: 'zombie', iskeletler: 'skeleton', creeper: 'creeper', patlayıcı: 'creeper', sürüngen: 'creeper', enderman: 'enderman', balık: 'cod', balik: 'cod',
+  ghast: 'ghast', blaze: 'blaze', piglin: 'piglin', golem: 'iron_golem', demir_golem: 'iron_golem', kurbağa: 'frog', kurbaga: 'frog', arı: 'bee', ari: 'bee', papağan: 'parrot', papagan: 'parrot',
+  ahtapot: 'squid', yunus: 'dolphin', panda: 'panda', tilki: 'fox', keçi: 'goat', keci: 'goat', ayı: 'polar_bear', hostile: 'hostile', canavar: 'hostile', düşman: 'hostile', dusman: 'hostile',
   zombi: 'zombie', iskelet: 'skeleton', örümcek: 'spider', orumcek: 'spider', inek: 'cow', koyun: 'sheep',
   domuz: 'pig', tavuk: 'chicken', yarasa: 'bat', cadı: 'witch', cadi: 'witch', hortlak: 'phantom',
   köylü: 'villager', koylu: 'villager', at: 'horse', tekne: 'boat', kurt: 'wolf', kedi: 'cat',
@@ -196,6 +275,35 @@ const SLOT_ALIASES = {
 }
 
 const normName = (s) => String(s ?? '').trim().toLowerCase().replace(/^minecraft:/, '').replace(/[\s-]+/g, '_')
+
+// Modelin değişik şekillerde yazdığı eylem alanlarını standarda getir (params iç içe, [x,y,z] dizisi, amount/qty...)
+function flattenAction(a) {
+  let o = { ...a }
+  for (const k of ['params', 'parameters', 'args', 'arguments', 'data', 'options', 'input']) {
+    if (o[k] && typeof o[k] === 'object' && !Array.isArray(o[k])) { const inner = o[k]; delete o[k]; o = { ...inner, ...o } }
+  }
+  if (typeof o.type !== 'string' || !o.type) {
+    const t = [o.action, o.act, o.kind, o.name].find((x) => typeof x === 'string' && x)
+    if (t) o.type = t
+  }
+  for (const k of ['pos', 'position', 'coords', 'coordinates', 'location', 'at', 'xyz']) {
+    const v = o[k]
+    if (v === undefined || v === null) continue
+    if (Array.isArray(v) && v.length >= 3) { if (o.x === undefined) { o.x = v[0]; o.y = v[1]; o.z = v[2] } }
+    else if (typeof v === 'object' && (v.x !== undefined || v.z !== undefined)) { if (o.x === undefined) { o.x = v.x; o.y = v.y; o.z = v.z } }
+    else if (typeof v === 'string') { const nums = v.match(/-?\d+(?:\.\d+)?/g); if (nums && nums.length >= 3 && o.x === undefined) { o.x = Number(nums[0]); o.y = Number(nums[1]); o.z = Number(nums[2]) } }
+  }
+  if (o.count === undefined) { const c = [o.amount, o.qty, o.quantity, o.number, o.n, o.times].find((x) => x !== undefined); if (c !== undefined) o.count = c }
+  if (o.target === undefined) { const t = [o.player, o.user, o.username, o.who, o.entity, o.victim].find((x) => typeof x === 'string' && x); if (t) o.target = t }
+  const res = [o.resource, o.material, o.thing, o.object].find((x) => typeof x === 'string' && x)
+  if (res) { if (o.block === undefined) o.block = res; if (o.item === undefined) o.item = res }
+  if (typeof o.name === 'string' && o.name && o.type !== 'set_home' && o.type !== 'go_home' && o.type !== 'custom' && o.type !== 'skill' && o.type !== 'schematic' && o.type !== 'download_schematic') {
+    if (o.item === undefined) o.item = o.name
+    if (o.block === undefined) o.block = o.name
+  }
+  if (typeof o.query !== 'string') { const q = [o.search, o.question, o.topic_query, o.q].find((x) => typeof x === 'string' && x); if (q) o.query = q }
+  return o
+}
 
 function validateActions(inst, rawActions, ctx = {}) {
   const out = []
@@ -228,13 +336,19 @@ function validateActions(inst, rawActions, ctx = {}) {
         const defs = Object.values(md.blocksByName).filter((b) => b.name.endsWith('_log') && !b.name.startsWith('stripped_'))
         return { defs, label: 'odun' }
       }
+      const fam = BLOCK_FAMILIES[n0]
+      if (fam && !md.blocksByName[n0] || (fam && ['stone', 'dirt', 'sand', 'glass', 'planks', 'ice'].includes(n0))) {
+        const list = (typeof fam === 'function' ? fam(md) : fam).filter((x) => md.blocksByName[x])
+        const defsF = list.map((x) => md.blocksByName[x])
+        if (defsF.length) return { defs: defsF, label: n0 }
+      }
       const n = BLOCK_SYNONYMS[n0] || n0
-      let def = md.blocksByName[n]
+      let def = md.blocksByName[n] || md.blocksByName[n.replace(/(es|s)$/, '')]
       if (!def) {
-        const m = Object.keys(md.blocksByName).filter((k) => k.includes(n)).sort((a, b) => a.length - b.length)
+        const m = suggestNames(n, Object.keys(md.blocksByName), 1)
         if (m.length) def = md.blocksByName[m[0]]
       }
-      if (!def) throw new Error(`"${raw}" geçerli bir Minecraft blok kimliği değil (örn. oak_log, cobblestone, iron_ore)`)
+      if (!def) throw new Error(`"${raw}" geçerli bir Minecraft blok kimliği değil.${didYouMean(n, Object.keys(md.blocksByName))} (örn. oak_log, cobblestone, iron_ore)`)
       const defs = [def]
       if (def.name.endsWith('_ore')) {
         const deep = md.blocksByName['deepslate_' + def.name]
@@ -252,12 +366,12 @@ function validateActions(inst, rawActions, ctx = {}) {
         const hit = inv.find((i) => i.name === n) || inv.find((i) => i.name.includes(n))
         if (hit) return md.itemsByName[hit.name]
       }
-      let def = md.itemsByName[n]
+      let def = md.itemsByName[n] || md.itemsByName[n.replace(/(es|s)$/, '')]
       if (!def) {
-        const m = Object.keys(md.itemsByName).filter((k) => k.includes(n)).sort((a, b) => a.length - b.length)
+        const m = suggestNames(n, Object.keys(md.itemsByName), 1)
         if (m.length) def = md.itemsByName[m[0]]
       }
-      if (!def) throw new Error(`"${raw}" geçerli bir Minecraft eşya kimliği değil (örn. iron_sword, bread, cobblestone)`)
+      if (!def) throw new Error(`"${raw}" geçerli bir Minecraft eşya kimliği değil.${didYouMean(n, Object.keys(md.itemsByName))} (örn. iron_sword, bread, cobblestone)`)
       return def
     },
     placeable(raw) {
@@ -269,7 +383,7 @@ function validateActions(inst, rawActions, ctx = {}) {
       if (['hostile', 'monster', 'enemy', 'düşman', 'dusman', 'canavar'].includes(n0)) return 'hostile'
       const n = MOB_SYNONYMS[n0] || n0
       if (md.entitiesByName[n]) return n
-      const m = Object.keys(md.entitiesByName).filter((k) => k.includes(n)).sort((a, b) => a.length - b.length)
+      const m = suggestNames(n, Object.keys(md.entitiesByName), 3)
       if (!m.length) throw new Error(`"${raw}" geçerli bir mob adı değil (örn. zombie, cow, villager, hostile)`)
       return m[0]
     },
@@ -551,7 +665,9 @@ function validateActions(inst, rawActions, ctx = {}) {
     web_search: (a) => {
       const q = String(a.query ?? '').replace(/\s+/g, ' ').trim()
       if (q.length < 3) throw new Error('query en az 3 karakter olmalı')
-      return { query: q.slice(0, 200) }
+      const TOPICS = { recipe: 'recipe crafting ingredients', tarif: 'recipe crafting ingredients', mechanic: 'mechanics how it works', mekanik: 'mechanics how it works', redstone: 'redstone design tutorial', pvp: 'pvp combat tutorial', build: 'build tutorial guide', yapi: 'build tutorial guide', farm: 'farm design tutorial', mob: 'mob behavior drops spawning' }
+      const topic = TOPICS[normName(a.topic || '')] || ''
+      return { query: q.slice(0, 200), topic, deep: a.deep === true || a.deep === 'true' }
     },
     crystal_pvp: (a) => {
       const target = h.player(a.target)
@@ -717,9 +833,10 @@ function validateActions(inst, rawActions, ctx = {}) {
   if (!Array.isArray(rawActions)) return { out, errors: ['"actions" bir dizi (array) olmalı.'] }
   if (rawActions.length > MAX_ACTIONS) errors.push(`En fazla ${MAX_ACTIONS} eylem verilebilir, fazlası atıldı.`)
 
-  rawActions.slice(0, MAX_ACTIONS).forEach((a, i) => {
+  rawActions.slice(0, MAX_ACTIONS).forEach((a0, i) => {
     const tag = `eylem #${i + 1}`
-    if (!a || typeof a !== 'object' || Array.isArray(a)) { errors.push(`${tag}: nesne olmalı.`); return }
+    if (!a0 || typeof a0 !== 'object' || Array.isArray(a0)) { errors.push(`${tag}: nesne olmalı.`); return }
+    const a = flattenAction(a0)
     let type = normName(a.type)
     type = TYPE_ALIASES[type] || type
     if (!N[type]) {

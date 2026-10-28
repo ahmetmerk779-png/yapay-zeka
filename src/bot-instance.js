@@ -181,6 +181,22 @@ class BotInstance {
 
   knowledgeFile() { return path.join(DATA_DIR, `knowledge-${safeName(this.cfg.name)}.json`) }
 
+  macrosFile() { return path.join(DATA_DIR, `macros-${safeName(this.cfg.name)}.json`) }
+
+  loadMacros() {
+    try { this.macros = JSON.parse(fs.readFileSync(this.macrosFile(), 'utf8')) } catch (e) { this.macros = {} }
+  }
+
+  // Modelin yazdığı ve başarıyla çalışan özel eylemleri kaydet (tekrar kullanılsın)
+  saveMacro(name, steps, desc) {
+    if (!this.macros) this.macros = {}
+    this.macros[name] = { steps, desc: desc || (this.macros[name] && this.macros[name].desc) || '', ts: Date.now() }
+    const names = Object.keys(this.macros)
+    if (names.length > 30) delete this.macros[names.sort((a, b) => this.macros[a].ts - this.macros[b].ts)[0]]
+    try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(this.macrosFile(), JSON.stringify(this.macros)) } catch (e) { /* önemsiz */ }
+    this.log('info', `Yeni özel eylem kaydedildi: ${name}`)
+  }
+
   loadKnowledge() {
     try { this.knowledge = JSON.parse(fs.readFileSync(this.knowledgeFile(), 'utf8')) } catch (e) { this.knowledge = [] }
   }
@@ -234,11 +250,18 @@ class BotInstance {
         this.movements.scafoldingBlocks = cheap.map((n) => this.mcData.itemsByName[n] && this.mcData.itemsByName[n].id).filter((x) => x !== undefined)
       } catch (e) { /* yoksay */ }
       if ('canOpenDoors' in this.movements) this.movements.canOpenDoors = true
+      try {   // insan benzeri hareket/kafa çevirme (motion.js yoksa atlanır)
+        const Motion = require('./motion')
+        Motion.installSmoothLook(bot)
+        Motion.tuneMovements(this.movements, this.mcData)
+        this.timers.push(Motion.startIdleGlance(this))
+      } catch (e) { this.log('warn', `motion.js yüklenemedi (kafa çevirme anlık olacak): ${e.message}`) }
       bot.pathfinder.setMovements(this.movements)
       this.ready = true
       this.retry = 0
       this.loadHomes()
       this.loadKnowledge()
+      this.loadMacros()
       this.mode = 'idle'
       this.setStatus('online')
       this.log('info', `Sunucuya girdi. Sürüm: ${bot.version}`)
@@ -246,6 +269,23 @@ class BotInstance {
       this.timers.push(setInterval(() => {
         if (this.cfg.autoEat) { this.autoEat().catch(() => {}); this.autoArmor().catch(() => {}) }
       }, 3000))
+      // Takip modunda engele takılırsa kendini kurtar (zıpla / kır / köprü kur / yön değiştir)
+      let fp = null
+      let fSince = Date.now()
+      let fN = 0
+      this.timers.push(setInterval(() => {
+        try {
+          if (this.mode !== 'follow' || !this.ready) { fp = null; return }
+          const p = bot.entity.position
+          const moving = bot.pathfinder.isMoving && bot.pathfinder.isMoving()
+          if (!fp || p.distanceTo(fp) > 0.5 || !moving || bot.targetDigBlock) { fp = p.clone(); fSince = Date.now(); return }
+          if (Date.now() - fSince > 6000) {
+            fSince = Date.now(); fN++
+            const g = bot.pathfinder.goal
+            require('./actions').unstick(this, fN, g).then(() => { if (g && this.mode === 'follow') bot.pathfinder.setGoal(g, true) }).catch(() => {})
+          }
+        } catch (e) { /* önemsiz */ }
+      }, 1000))
       this.timers.push(setInterval(() => this.emit('state', { state: this.getState() }), 1500))
     })
 
@@ -501,6 +541,7 @@ class BotInstance {
       kayitli_noktalar: s.homes, mod: this.mode, yaptigi_is: this.activity,
       son_gorev_sonuclari: this.lastResults.slice(-4), son_soylediklerin: this.recentSaid.slice(-5),
       ogrendiklerin: this.relevantNotes(message),
+      kayitli_makrolar: Object.entries(this.macros || {}).map(([k, v]) => (v.desc ? `${k} (${v.desc})` : k)).slice(0, 15),
       yuklu_sematikler: /sema|schem|litem|yap[ıi]|kur|ev\b/i.test(message) ? require('./schematic').listFiles().map((f) => f.name).slice(0, 10) : undefined,
     }
   }

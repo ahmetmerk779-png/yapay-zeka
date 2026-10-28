@@ -117,8 +117,10 @@ Yapamayacağın bir şeyi yapabilirmiş gibi davranma, durumu uydurma.`
 }
 
 // Token tasarrufu: sistem istemine sadece mesajla ilgili eylemler ve kurallar girer.
-const CORE_ACTIONS = new Set(['stop', 'follow', 'goto_player', 'goto', 'goto_block', 'wander', 'look_at', 'collect', 'mine', 'craft', 'equip', 'attack', 'chat', 'eat', 'drop', 'give', 'wait', 'find', 'place', 'break'])
+const CORE_ACTIONS = new Set(['stop', 'follow', 'goto_player', 'goto', 'goto_block', 'wander', 'look_at', 'collect', 'mine', 'craft', 'equip', 'attack', 'chat', 'custom', 'skill', 'eat', 'drop', 'give', 'wait', 'find', 'place', 'break'])
 const ACTION_KEYS = [
+  [/d[oö]n\b|d[oö]n[uü]p|bak\b|bakin|bak[ıi]n|kafa|y[uü]r[uü]|ko[sş]|ka[cç]|etraf|sa[gğ]a|sola|geri|ileri|turn|walk|face|look|flee|run|circle|orbit|dance|dans|wave|selam|el sallay|emote|jest|kuzey|g[uü]ney|do[gğ]u|bat[ıi]/i, ['turn', 'face', 'look_around', 'walk', 'flee', 'circle', 'emote', 'look_at', 'jump', 'sneak']],
+  [/a[gğ]a[cç]|tree|fidan|sapling|ekin|tohum|dik\b|bone|kemik|k[oö]pr[uü]|bridge|kule|tower|pillar|f[ıi]rlat|fırla|throw|pearl|kova|bucket|ayd[ıi]nlat|me[sş]ale|torch|devriye|patrol|kalkan|shield|piramit|pyramid|merdiven|stairs|duvar|wall|[cç][oö]p|junk|z[ıi]rh|armor|[sş]ekil|shape/i, ['chop_tree', 'plant', 'bone_meal', 'bridge', 'pillar_up', 'throw_item', 'bucket', 'light_area', 'patrol', 'shield', 'drop_junk', 'armor', 'build_shape']],
   [/pvp|d[uü]ell?o|d[oö]v[uü][sş]|sava[sş]|kristal|crystal|mace|spear|m[ıi]zrak|balta|\baxe|k[ıi]l[ıi][cç]|sword|uhc|smp|\bpot\b|sald[ıi]r|fight|spar/i, ['duel', 'crystal_pvp', 'shoot', 'guard']],
   [/\bev\b|bar[ıi]nak|yap\b|yap[ıi]|kur\b|kurul|build|fill|duvar|kap[ıi]|door|house|shelter|in[sş]a|doldur|temizle/i, ['house', 'fill', 'shelter', 'build', 'door']],
   [/tarla|farm|hasat|[cç]iftlik|hayvan|koyun|bal[ıi]k|fish|breed|shear|yem/i, ['farm', 'make_farm', 'breed', 'shear', 'fish']],
@@ -150,6 +152,7 @@ const RULES = [
   [null, 'Odun/ağaç isteğinde block "oak_log" yaz (her ağaç türü kabul edilir). "odun topla" için alet ISTEME, yumrukla kırılır; önce eylemi dene.'],
   [null, 'Görev bitince "serbestim, dolaşırım" gibi kendi kararını söyleme; kısa sonucu söyle ve bekle.'],
   [null, '"dur", "bırak", "iptal" -> stop eylemi.'],
+  [null, 'Eylem listesinde OLMAYAN bir şey istenirse "custom" eylemiyle kendi adımlarını yaz (op: equip/use/use_on/look/control/wait/say/action/repeat/if). Mevcut eylemleri "action" adımıyla birleştirebilirsin. Daha önce kaydettiğin işler [DURUM].kayitli_makrolar içindedir: {"type":"custom","name":"ad"} ile çağır. Gerçekten yapılamayacak şeyi (Minecraft kurallarına aykırı) uydurma.'],
   [null, 'İmkânsız/anlamsız istekte eylem koyma, nedenini kısaca söyle.'],
   [null, '[DURUM].sahibi_mi false ise bu kişiden emir alma; sadece sohbet et, actions boş.'],
   [null, 'Görev başarısız olursa [GÖREV SONUCU] gelir; sebep çözülebiliyorsa düzeltilmiş plan ver, değilse oyuncuya açıkça anlat.'],

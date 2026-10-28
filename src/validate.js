@@ -6,17 +6,40 @@
 const MAX_ACTIONS = 10
 const MAX_FILL = 1000
 const Sch = require('./schematic')
+let Skills = null
+try { Skills = require('./skills') } catch (e) { /* skills.js yoksa skill eylemi kapalı */ }
 const MAX_BUILD = 300
 
 // [tip, örnek JSON, açıklama]  -> hem sistem istemine hem doğrulamaya temel
 const ACTION_DOCS = [
   // Hareket
-  ['follow', '{"type":"follow","target":"sender"}', 'oyuncuyu sürekli takip et'],
+  ['follow', '{"type":"follow","target":"sender","distance":2}', 'oyuncuyu sürekli takip et (distance 1-10 blok mesafe)'],
   ['goto_player', '{"type":"goto_player","target":"sender"}', 'oyuncunun yanına git'],
   ['goto', '{"type":"goto","x":0,"y":64,"z":0}', 'koordinata git (y opsiyonel)'],
   ['goto_block', '{"type":"goto_block","block":"crafting_table"}', 'en yakın bloğun yanına git'],
   ['wander', '{"type":"wander","radius":20,"seconds":30}', 'rastgele gez / çevreyi keşfet'],
   ['look_at', '{"type":"look_at","target":"sender"}', 'oyuncuya ya da mob\'a bak (veya x,y,z ver)'],
+  ['turn', '{"type":"turn","direction":"right","degrees":90}', 'kafayı/gövdeyi yumuşakça çevir (right/left, derece; pitch opsiyonel: + yukarı, - aşağı)'],
+  ['face', '{"type":"face","direction":"north"}', 'bir yöne dön: north/south/east/west/up/down/forward/back'],
+  ['look_around', '{"type":"look_around","seconds":6}', 'etrafa bakın (kafa çevirerek çevreyi tara)'],
+  ['walk', '{"type":"walk","direction":"forward","blocks":8,"sprint":false}', 'baktığın yöne göre elle yürü (forward/back/left/right); engelde zıplar, uçurum/lavda durur'],
+  ['flee', '{"type":"flee","from":"zombie","blocks":24}', 'birinden/bir şeyden kaç (oyuncu adı, mob adı ya da "hostile")'],
+  ['circle', '{"type":"circle","target":"sender","radius":4,"seconds":15}', 'birinin etrafında dön (yan adım, mesafeyi korur)'],
+  ['emote', '{"type":"emote","kind":"wave"}', 'jest: wave (el salla), nod (evet), shake (hayır), dance (dans), crouch (çömel-kalk)'],
+  ['chop_tree', '{"type":"chop_tree","count":1}', 'ağacı tamamen kes (alttan üste), düşenleri topla, fidan varsa yeniden dik'],
+  ['plant', '{"type":"plant","item":"oak_sapling","radius":8,"count":4}', 'fidan/tohum/havuç/patates ek (fidan toprağa, ekin sürülmüş tarlaya)'],
+  ['bone_meal', '{"type":"bone_meal","radius":8,"count":10}', 'ekin/fidanlara kemik tozu uygula'],
+  ['bridge', '{"type":"bridge","blocks":10}', 'baktığın yöne köprü kur (boşluk üstünde çömelerek ilerler; item opsiyonel)'],
+  ['pillar_up', '{"type":"pillar_up","height":6}', 'zıplayıp altına blok koyarak yukarı çık (kule)'],
+  ['throw_item', '{"type":"throw_item","item":"ender_pearl","target":"sender","count":1}', 'eşya fırlat (ender_pearl, snowball, egg, splash_potion); target ya da x,y,z, yoksa ileri'],
+  ['bucket', '{"type":"bucket","mode":"place","fluid":"water"}', 'kova: mode pickup (sudan/lavdan doldur) ya da place (su/lav koy; x,y,z opsiyonel)'],
+  ['light_area', '{"type":"light_area","radius":12,"spacing":5}', 'karanlık yerlere meşale koy (torch gerekir)'],
+  ['patrol', '{"type":"patrol","points":[{"x":0,"z":0},{"x":20,"z":0}],"loops":3}', 'noktalar arasında devriye gez'],
+  ['shield', '{"type":"shield","seconds":5}', 'kalkan kaldır ve tut'],
+  ['drop_junk', '{"type":"drop_junk","keep":0}', 'gereksiz eşyaları (toprak, çakıl, çürük et...) at; items ile liste verilebilir'],
+  ['armor', '{"type":"armor"}', 'envanterdeki en iyi zırhı giy'],
+  ['build_shape', '{"type":"build_shape","shape":"tower","block":"cobblestone","width":5,"height":8}', 'hazır şekil kur: wall, tower, pyramid, stairs, platform, circle, cube (width/height/length)'],
+  ['skill', '{"type":"skill","name":"get_iron_pickaxe"}', 'HAZIR YETENEK (300+ isim, zincirleme eylemler). Kalıplar: gather_<kaynak>[_adet] (gather_iron, gather_sand), craft_<eşya>[_adet], get_<wooden|stone|iron|golden|diamond>_<pickaxe|axe|shovel|hoe|sword>, get_<iron|golden|diamond>_<helmet|chestplate|leggings|boots|armor_set>, house_<small|medium|large>_<blok>, build_<wall|tower|pyramid|stairs|platform|circle|cube>_<blok>, hunt_<hayvan>[_adet], cook_<çiğ_eşya>, duel_<stil>, face_<yön>, turn_<left|right>_<derece>, walk_<yön>_<blok>, emote_<tür>, plant_<eşya>, chop_tree_<n>, bridge_<n>, tower_<n>, light_up_<r>, cleanup, wear_armor, eat_best, hunt_hostile. Birden çok adımlı işi tek eylemle yap; biri başarısızsa durur'],
   ['jump', '{"type":"jump"}', 'zıpla'],
   ['sneak', '{"type":"sneak","on":true}', 'çömel / kalk'],
   ['set_home', '{"type":"set_home","name":"ev"}', 'bulunduğun noktayı kaydet'],
@@ -81,6 +104,7 @@ const ACTION_DOCS = [
   ['web_search', '{"type":"web_search","query":"minecraft piston door redstone design"}', 'web\'de araştır ve öğren (sonuç sana [ARAŞTIRMA SONUCU] olarak gelir)'],
   ['crystal_pvp', '{"type":"crystal_pvp","target":"OyuncuAdi","seconds":120}', 'oyuncuyla kristal PvP (end_crystal + obsidyen/bedrock gerekir; sadece açıkça istenirse)'],
   ['duel', '{"type":"duel","target":"sender","style":"sword","seconds":120}', 'oyuncuyla PvP düellosu ("benimle pvp at" = target sender). style: sword/axe/mace/spear/pot(netherite pot)/uhc/smp/crystal/elytra_mace/auto. Kritik, W-tap, yan adım, kalkan kırma, totem, altın elma, iksir, ok, rüzgar topu+mace içerir'],
+  ['custom', '{"type":"custom","name":"ag_at","desc":"hedefin ayağına ağ koy","steps":[{"op":"equip","item":"cobweb"},{"op":"look","at":"player","name":"sender"},{"op":"use"}]}', 'LİSTEDE OLMAYAN bir isteği kendi adımlarınla yap. op: equip{item}, use{item?,hold(ms)}, use_on{dx,dy,dz}, look{at:down|up|player|mob,name}, control{state:forward|back|left|right|jump|sprint|sneak,on,ms}, wait{ms}, say{message}, action{action:{mevcut eylem},optional}, repeat{times,steps}, if{cond:{kind:health_below|health_above|food_below|has_item|no_item|on_ground,value|item},then,else}. Başarılı olursa name ile kaydedilir; sonra {"type":"custom","name":"..."} ile tekrar çağrılır (kayıtlı_makrolar listesine bak)'],
   ['make_farm', '{"type":"make_farm","crop":"wheat","radius":4}', 'önünde çalışan tarla kur (çapa, su kovası ve tohum gerekir)'],
   ['house', '{"type":"house","size":"small","wall":"oak_planks"}', 'ev kur (size small=5x5/medium=7x7/large=9x9; wall/floor/roof/glass/door opsiyonel). Malzeme: small ~ 25 zemin + ~44 duvar + 25 çatı blok; kapı/cam/meşale yoksa atlanır. Parametre vermezsen envanterdeki en bol blok seçilir'],
 ]
@@ -102,7 +126,7 @@ const TYPE_ALIASES = {
   ride: 'mount', unmount: 'dismount', locate: 'find', search: 'find', scan: 'find',
   harvest: 'farm', crops: 'farm', cook: 'smelt', bow: 'shoot',
   pick_up: 'pickup', collect_items: 'pickup',
-  pvp: 'duel', spar: 'duel', fight_me: 'duel', duello: 'duel', portal: 'nether_portal', enchanting: 'enchant', brewing: 'brew', potion: 'brew', construct: 'build',
+  rotate: 'turn', spin: 'turn', head: 'look_around', scan: 'look_around', run_away: 'flee', escape: 'flee', orbit: 'circle', strafe: 'circle', gesture: 'emote', dance: 'emote', wave: 'emote', go_forward: 'walk', step: 'walk', macro: 'custom', script: 'custom', sequence: 'custom', routine: 'custom', pvp: 'duel', spar: 'duel', fight_me: 'duel', duello: 'duel', portal: 'nether_portal', enchanting: 'enchant', brewing: 'brew', potion: 'brew', construct: 'build',
   build_house: 'house', make_house: 'house', sign: 'write_sign', open_door: 'door', trapdoor: 'door', gate: 'door',
   schem: 'schematic', paste: 'schematic', load_schematic: 'schematic', litematic: 'schematic', build_schematic: 'schematic',
   schematic_list: 'list_schematics', schematics: 'list_schematics', research: 'web_search', google: 'web_search', learn: 'web_search',
@@ -292,8 +316,47 @@ function validateActions(inst, rawActions, ctx = {}) {
   const N = {
     stop: () => ({}), wake: () => ({}), dismount: () => ({}), sleep: () => ({}), eat: () => ({}), jump: () => ({}),
     inspect_chest: (a) => (a.x !== undefined && a.z !== undefined ? { pos: h.coord(a) } : {}),
-    follow: (a) => ({ target: h.player(a.target) }),
-    goto_player: (a) => ({ target: h.player(a.target) }),
+    follow: (a) => ({ target: h.player(a.target), distance: h.int(a.distance, 2, 1, 10, 'distance'), sprint: !(a.sprint === false || a.sprint === 'false') }),
+    goto_player: (a) => ({ target: h.player(a.target), distance: h.int(a.distance, 2, 1, 10, 'distance') }),
+    turn: (a) => {
+      let deg = a.degrees === undefined || a.degrees === '' ? 90 : h.num(a.degrees, 'degrees')
+      let dir = normName(a.direction || (deg < 0 ? 'left' : 'right'))
+      if (['sola', 'left', 'l'].includes(dir)) dir = 'left'
+      else if (['saga', 'sağa', 'right', 'r'].includes(dir)) dir = 'right'
+      else throw new Error('direction left/right olmalı')
+      deg = Math.min(360, Math.abs(deg))
+      return { direction: dir, degrees: deg, pitch: a.pitch === undefined || a.pitch === '' ? null : Math.max(-89, Math.min(89, h.num(a.pitch, 'pitch'))) }
+    },
+    face: (a) => {
+      const MAP = { kuzey: 'north', guney: 'south', güney: 'south', dogu: 'east', doğu: 'east', bati: 'west', batı: 'west', yukari: 'up', yukarı: 'up', asagi: 'down', aşağı: 'down', ileri: 'forward', geri: 'back', arka: 'back', on: 'forward', ön: 'forward' }
+      const d0 = normName(a.direction || a.target)
+      const d = MAP[d0] || d0
+      if (!['north', 'south', 'east', 'west', 'up', 'down', 'forward', 'back'].includes(d)) throw new Error('direction north/south/east/west/up/down/forward/back olmalı')
+      return { direction: d }
+    },
+    look_around: (a) => ({ seconds: h.int(a.seconds, 6, 1, 60, 'seconds') }),
+    walk: (a) => {
+      const MAP = { ileri: 'forward', geri: 'back', sag: 'right', sağ: 'right', sol: 'left', saga: 'right', sağa: 'right', sola: 'left' }
+      const d0 = normName(a.direction || 'forward')
+      const d = MAP[d0] || d0
+      if (!['forward', 'back', 'left', 'right'].includes(d)) throw new Error('direction forward/back/left/right olmalı')
+      return { direction: d, blocks: h.int(a.blocks, 5, 1, 64, 'blocks'), sprint: a.sprint === true || a.sprint === 'true', sneak: a.sneak === true || a.sneak === 'true' }
+    },
+    flee: (a) => {
+      const raw = a.from ?? a.target
+      const n = normName(raw)
+      if (!n || n === 'hostile' || n === 'hostiles' || n === 'dusman' || n === 'düşman') return { kind: 'hostile', name: 'hostile', blocks: h.int(a.blocks, 24, 8, 64, 'blocks'), seconds: h.int(a.seconds, 8, 2, 60, 'seconds') }
+      const exact = h.exactPlayer(raw)
+      if (exact) return { kind: 'player', name: exact, blocks: h.int(a.blocks, 24, 8, 64, 'blocks'), seconds: h.int(a.seconds, 8, 2, 60, 'seconds') }
+      return { kind: 'mob', name: h.mob(raw), blocks: h.int(a.blocks, 24, 8, 64, 'blocks'), seconds: h.int(a.seconds, 8, 2, 60, 'seconds') }
+    },
+    circle: (a) => ({ target: h.player(a.target), radius: h.int(a.radius, 4, 2, 10, 'radius'), seconds: h.int(a.seconds, 15, 3, 120, 'seconds'), direction: normName(a.direction) === 'left' ? 'left' : 'right' }),
+    emote: (a) => {
+      const MAP = { selam: 'wave', el_salla: 'wave', wave: 'wave', nod: 'nod', evet: 'nod', shake: 'shake', hayir: 'shake', hayır: 'shake', dance: 'dance', dans: 'dance', crouch: 'crouch', comel: 'crouch', çömel: 'crouch' }
+      const k = MAP[normName(a.kind || 'wave')]
+      if (!k) throw new Error('kind wave/nod/shake/dance/crouch olmalı')
+      return { kind: k }
+    },
     goto: (a) => ({
       x: h.num(a.x, 'x'), z: h.num(a.z, 'z'),
       y: a.y === undefined || a.y === null || a.y === '' ? null : Math.max(-64, Math.min(320, h.num(a.y, 'y'))),
@@ -536,6 +599,116 @@ function validateActions(inst, rawActions, ctx = {}) {
         wall: h.placeable(W), floor: h.placeable(a.floor || auto || a.wall || 'cobblestone'), roof: h.placeable(a.roof || auto || a.wall || 'oak_planks'),
         glass: h.placeable(a.glass || 'glass'), door: h.placeable(a.door || 'oak_door'), offset: h.int(a.offset, 2, 1, 16, 'offset'),
       }
+    },
+    custom: (a) => {
+      const name = String(a.name || '').toLowerCase().replace(/[^a-z0-9_]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 32)
+      let rawSteps = a.steps
+      if (!Array.isArray(rawSteps) || !rawSteps.length) {
+        const m = inst.macros && inst.macros[name]
+        if (!m) throw new Error('custom için steps dizisi ver (ya da kayıtlı makro adını yaz)')
+        rawSteps = m.steps
+      }
+      const budget = { n: 0 }
+      const num = (v, def, min, max, label) => h.int(v, def, min, max, label)
+      const ITEM = (v) => h.item(v, true).name
+      const normSteps = (list, depth) => {
+        if (!Array.isArray(list)) throw new Error('steps/then/else dizi olmalı')
+        if (depth > 3) throw new Error('iç içe adım derinliği en fazla 3')
+        return list.map((st) => {
+          if (!st || typeof st !== 'object') throw new Error('adım nesne olmalı')
+          if (++budget.n > 60) throw new Error('en fazla 60 adım yazılabilir')
+          const op = normName(st.op)
+          switch (op) {
+            case 'equip': return { op, item: ITEM(st.item), slot: ['hand', 'off-hand', 'head', 'torso', 'legs', 'feet'].includes(st.slot) ? st.slot : 'hand' }
+            case 'use': return { op, item: st.item ? ITEM(st.item) : null, hold: num(st.hold ?? st.ms, 0, 0, 4000, 'hold') }
+            case 'use_on': {
+              const rel = st.dx !== undefined || st.dy !== undefined || st.dz !== undefined
+              return rel ? { op, rel: true, x: num(st.dx, 0, -8, 8, 'dx'), y: num(st.dy, 0, -8, 8, 'dy'), z: num(st.dz, 0, -8, 8, 'dz') }
+                : { op, rel: false, x: num(st.x, undefined, -30000000, 30000000, 'x'), y: num(st.y, undefined, -64, 320, 'y'), z: num(st.z, undefined, -30000000, 30000000, 'z') }
+            }
+            case 'look': {
+              const at = normName(st.at || 'down')
+              if (at === 'down' || at === 'up') return { op, at }
+              if (at === 'coord') return { op, at, x: num(st.x, undefined, -30000000, 30000000, 'x'), y: num(st.y, undefined, -64, 320, 'y'), z: num(st.z, undefined, -30000000, 30000000, 'z') }
+              if (at === 'mob') return { op, at, name: h.mob(st.name) }
+              return { op, at: 'player', name: st.name ? h.player(st.name) : 'sender' }
+            }
+            case 'control': {
+              const state = normName(st.state)
+              if (!['forward', 'back', 'left', 'right', 'jump', 'sprint', 'sneak'].includes(state)) throw new Error('control state forward/back/left/right/jump/sprint/sneak olmalı')
+              return { op, state, on: !(st.on === false || st.on === 'false'), ms: num(st.ms, 0, 0, 5000, 'ms') }
+            }
+            case 'wait': return { op, ms: num(st.ms, 500, 50, 10000, 'ms') }
+            case 'say': case 'chat': return { op: 'say', message: String(st.message || '').slice(0, 200) }
+            case 'action': {
+              const inner = st.action
+              if (!inner || typeof inner !== 'object') throw new Error('action adımında action nesnesi gerekli')
+              if (normName(inner.type) === 'custom' || TYPE_ALIASES[normName(inner.type)] === 'custom') throw new Error('custom içinde custom çağrılamaz')
+              const v = validateActions(inst, [inner], ctx)
+              if (v.errors.length) throw new Error(v.errors.join(' | '))
+              return { op, action: v.out[0], optional: st.optional === true }
+            }
+            case 'repeat': return { op, times: num(st.times, 1, 1, 20, 'times'), steps: normSteps(st.steps, depth + 1) }
+            case 'if': {
+              const c = st.cond || {}
+              const kind = normName(c.kind)
+              if (!['health_below', 'health_above', 'food_below', 'has_item', 'no_item', 'on_ground'].includes(kind)) throw new Error('cond.kind geçersiz')
+              const cond = { kind }
+              if (kind === 'has_item' || kind === 'no_item') cond.item = ITEM(c.item)
+              else if (kind !== 'on_ground') cond.value = num(c.value, 10, 0, 20, 'value')
+              return { op, cond, then: normSteps(st.then || [], depth + 1), else: normSteps(st.else || [], depth + 1) }
+            }
+            default: throw new Error(`bilinmeyen op "${st.op}" (equip, use, use_on, look, control, wait, say, action, repeat, if)`)
+          }
+        })
+      }
+      const steps = normSteps(rawSteps, 0)
+      return { name: name || 'gecici', desc: String(a.desc || '').slice(0, 100), steps, save: a.save !== false && !!name && Array.isArray(a.steps) }
+    },
+    chop_tree: (a) => ({ count: h.int(a.count, 1, 1, 20, 'count') }),
+    plant: (a) => ({ item: h.item(a.item || 'wheat_seeds', true), radius: h.int(a.radius, 8, 2, 24, 'radius'), count: h.int(a.count, 8, 1, 64, 'count') }),
+    bone_meal: (a) => ({ radius: h.int(a.radius, 8, 2, 24, 'radius'), count: h.int(a.count, 10, 1, 64, 'count') }),
+    bridge: (a) => ({ blocks: h.int(a.blocks, 10, 1, 64, 'blocks'), item: a.item ? h.placeable(a.item) : null }),
+    pillar_up: (a) => ({ height: h.int(a.height, 6, 1, 40, 'height'), item: a.item ? h.placeable(a.item) : null }),
+    throw_item: (a) => {
+      const item = h.item(a.item || 'ender_pearl', true)
+      const count = h.int(a.count, 1, 1, 16, 'count')
+      if (a.target !== undefined && a.target !== null && a.target !== '') return { item, count, kind: 'player', name: h.player(a.target) }
+      if (a.x !== undefined && a.z !== undefined) return { item, count, kind: 'pos', ...h.coord(a) }
+      return { item, count, kind: 'forward' }
+    },
+    bucket: (a) => {
+      const mode = normName(a.mode || 'place') === 'pickup' || normName(a.mode) === 'fill' ? 'pickup' : 'place'
+      const fluid = normName(a.fluid || 'water') === 'lava' ? 'lava' : 'water'
+      const hasPos = a.x !== undefined && a.z !== undefined
+      return { mode, fluid, ...(hasPos ? h.coord(a) : { x: null, y: null, z: null }) }
+    },
+    light_area: (a) => ({ radius: h.int(a.radius, 12, 4, 32, 'radius'), spacing: h.int(a.spacing, 5, 3, 10, 'spacing'), max: h.int(a.max, 30, 1, 100, 'max') }),
+    patrol: (a) => {
+      if (!Array.isArray(a.points) || a.points.length < 1) throw new Error('points dizisi gerekli: [{"x":0,"z":0}, ...]')
+      if (a.points.length > 8) throw new Error('en fazla 8 nokta')
+      return { points: a.points.map((p) => ({ x: h.num(p.x, 'x'), z: h.num(p.z, 'z') })), loops: h.int(a.loops, 1, 1, 20, 'loops'), seconds: h.int(a.seconds, 180, 10, 600, 'seconds') }
+    },
+    shield: (a) => ({ seconds: h.int(a.seconds, 5, 1, 60, 'seconds') }),
+    drop_junk: (a) => ({ keep: h.int(a.keep, 0, 0, 64, 'keep'), items: Array.isArray(a.items) ? a.items.slice(0, 20).map((x) => h.item(x, true).name) : null }),
+    armor: () => ({}),
+    build_shape: (a) => {
+      const MAP = { duvar: 'wall', kule: 'tower', piramit: 'pyramid', merdiven: 'stairs', zemin: 'platform', platform: 'platform', daire: 'circle', kup: 'cube', küp: 'cube' }
+      const s0 = normName(a.shape)
+      const shape = MAP[s0] || s0
+      if (!['wall', 'tower', 'pyramid', 'stairs', 'platform', 'circle', 'cube'].includes(shape)) throw new Error('shape wall/tower/pyramid/stairs/platform/circle/cube olmalı')
+      const width = h.int(a.width ?? a.size, 5, 1, 21, 'width')
+      const height = h.int(a.height, 4, 1, 24, 'height')
+      const length = h.int(a.length, width, 1, 21, 'length')
+      const item = h.placeable(a.block || a.item || 'cobblestone')
+      return { shape, item, width, height, length, offset: h.int(a.offset, 2, 1, 16, 'offset') }
+    },
+    skill: (a) => {
+      if (!Skills) throw new Error('skills.js yüklenemedi')
+      const steps = Skills.resolve(a.name, a.count)
+      if (!steps) throw new Error(`"${a.name}" adlı yetenek yok. Kalıplar: ${Skills.PATTERNS}`)
+      const r = N.custom({ name: String(a.name).slice(0, 30), desc: String(a.name).slice(0, 60), save: false, steps: steps.map((x) => ({ op: 'action', action: x })) })
+      return { ...r, save: false, long: true }
     },
     wait: (a) => ({ seconds: h.int(a.seconds, 3, 1, 120, 'seconds') }),
   }

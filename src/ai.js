@@ -236,7 +236,7 @@ const ACTION_KEYS = [
   [/t[uü]nel|tunnel|kaz|a[sş]a[gğ][ıi]|dig|yerdeki|pickup/i, ['tunnel', 'dig_down', 'pickup']],
   [/n[oö]bet|koru|guard|ok at|shoot|yay/i, ['guard', 'shoot']],
   [/\bbin\b|mount|uyu|sleep|yatak|home|eve\b|nokta|kaydet|uyan/i, ['mount', 'dismount', 'sleep', 'wake', 'set_home', 'go_home']],
-  [/etkile|kol\b|lever|buton|button|tabela|sign|komut|command|z[ıi]pla|jump|[cç][oö]mel|sneak|kullan/i, ['activate_block', 'write_sign', 'use_item', 'command', 'jump', 'sneak']],
+  [/etkile|redstone|kırmızı|kol\b|lever|buton|button|tabela|sign|komut|command|z[ıi]pla|jump|[cç][oö]mel|sneak|kullan/i, ['activate_block', 'write_sign', 'use_item', 'command', 'jump', 'sneak', 'redstone']],
 ]
 
 function pickActions(query) {
@@ -269,7 +269,7 @@ const RULES = [
   [/b[uü]y[uü]|enchant|[oö]rs|anvil|iksir|brew|simya|potion|nether|portal/i,
     'Büyü: enchanting_table + lapis_lazuli + XP (enchant). İksir: fill_bottles -> brew nether_wart -> brew hedef malzeme -> drink; blaze_powder yakıt şart. Nether portalı: 12 obsidian + flint_and_steel (nether_portal); obsidyen için diamond_pickaxe.'],
   [/redstone|piston|kol\b|lever|tekrarlay|repeater/i,
-    'Redstone: fill/place ile redstone, lever, repeater, piston koy; yön gerekiyorsa facing ekle. Karmaşık devrede başarı garanti değil, dürüst ol.'],
+    'Redstone: hazır devre için {"type":"redstone","kind":"line|lamp|pressure_door"} kullan. Başka devre: web_search (topic redstone) ile tasarımı öğren, sonra build ile TEK TEK blok koy (x=sağ,y=yukarı,z=ileri). Tekrarlayıcı facing=giriş tarafı. Piston/gözlemci yönünden emin değilsen dürüstçe söyle, uydurma.'],
   [/[sş]ema|schem|litem|\.nbt/i,
     'Şematik: ad belli değilse list_schematics, malzeme için schematic_info, kurmak için schematic. Yapı için asla command/setblock kullanma.'],
   [/yiyecek|ac[ıi]k|yemek|tarla|farm|hasat/i,

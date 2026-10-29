@@ -17,7 +17,7 @@ const ACTION_DOCS = [
   ['goto_player', '{"type":"goto_player","target":"sender"}', 'oyuncunun yanına git'],
   ['goto', '{"type":"goto","x":0,"y":64,"z":0}', 'koordinata git (y opsiyonel)'],
   ['goto_block', '{"type":"goto_block","block":"crafting_table"}', 'en yakın bloğun yanına git'],
-  ['wander', '{"type":"wander","radius":20,"seconds":30}', 'rastgele gez / çevreyi keşfet'],
+  ['wander', '{"type":"wander","radius":20,"seconds":30}', 'yakında rastgele gez (kısa mesafe; uzağa keşif için explore)'],
   ['look_at', '{"type":"look_at","target":"sender"}', 'oyuncuya ya da mob\'a bak (veya x,y,z ver)'],
   ['turn', '{"type":"turn","direction":"right","degrees":90}', 'kafayı/gövdeyi yumuşakça çevir (right/left, derece; pitch opsiyonel: + yukarı, - aşağı)'],
   ['face', '{"type":"face","direction":"north"}', 'bir yöne dön: north/south/east/west/up/down/forward/back'],
@@ -31,6 +31,15 @@ const ACTION_DOCS = [
   ['bone_meal', '{"type":"bone_meal","radius":8,"count":10}', 'ekin/fidanlara kemik tozu uygula'],
   ['redstone', '{"type":"redstone","kind":"line","length":10}', 'HAZIR REDSTONE devresi (baktığın yöne kurar): kind=line (kol + toz hattı + lamba, uzunsa tekrarlayıcı), lamp (kol + 2 toz + lamba), pressure_door (demir kapı + iki yanda basınç plakası). Gerekenler: redstone, lever, repeater, redstone_lamp, iron_door, stone_pressure_plate. Başka devreler için build ile tek tek blok koy'],
   ['fly', '{"type":"fly","target":"sender","seconds":40}', 'ELYTRA ile uç (envanterde elytra + firework_rocket gerekir; kalkışı, rokete basmayı, yönelmeyi, inişi kendi yapar). target: oyuncu adı/sender YA DA x,y,z koordinatı; hedef yoksa height ile yukarı çık (örn. height 60). seconds en çok 150'],
+  ['get_item', '{"type":"get_item","item":"packed_ice","count":64}', 'creative envanterinden (ya da OP ise /give ile) eşyayı KENDİ envanterine al. "yaratıcıdan al / creative\'den al / envantere al / ver bana değil, al" -> BUNU kullan. give OYUNCUYA ATAR, bunu yapma'],
+  ['status', '{"type":"status"}', 'durum raporu: can, açlık, konum, envanter özeti, yakındaki düşman. item verirsen o eşyadan kaç tane olduğunu söyler (LLM gerektirmez, hızlı)'],
+  ['explore', '{"type":"explore","direction":"random","blocks":100}', 'bir yönde uzağa keşfe çık (direction north/south/east/west/random, blocks 20-600). Engelde yön değiştirir, canı 6 altına inerse durur'],
+  ['protect', '{"type":"protect","target":"sender","seconds":120}', 'oyuncuyu koru: peşinden gider, ona yaklaşan düşmanlara saldırır (seconds 10-900)'],
+  ['loot', '{"type":"loot","radius":16}', 'yakındaki sandık ve varillerin içindeki HER ŞEYİ envantere al (radius 4-32)'],
+  ['store_all', '{"type":"store_all","radius":16}', 'envanteri yakındaki sandıklara boşalt; alet, zırh, silah, yemek, meşale ve ender pearl\'ü tutar'],
+  ['mine_vein', '{"type":"mine_vein","block":"iron_ore","limit":40}', 'bulduğu cevher damarının bağlı TÜM bloklarını kaz (lav/su yanındakileri atlar; limit 1-128). Tek tek mine yerine damar için bunu kullan'],
+  ['auto_tool', '{"type":"auto_tool","on":true}', 'otomatik alet seçimini aç/kapat (açıkken bot her bloğu kırmadan önce en hızlı aleti kendi kuşanır; varsayılan AÇIK)'],
+  ['server_commands', '{"type":"server_commands","query":"home"}', 'sunucuda kullanabildiğim komutları/eklentileri listele (query opsiyonel: komut adında ara). Bir komutu çalıştırmadan önce var mı diye bununla bak; çalıştırmak için command kullan'],
   ['bridge', '{"type":"bridge","blocks":10}', 'baktığın yöne köprü kur (boşluk üstünde çömelerek ilerler; item opsiyonel)'],
   ['pillar_up', '{"type":"pillar_up","height":6}', 'zıplayıp altına blok koyarak yukarı çık (kule)'],
   ['throw_item', '{"type":"throw_item","item":"ender_pearl","target":"sender","count":1}', 'eşya fırlat (ender_pearl, snowball, egg, splash_potion); target ya da x,y,z, yoksa ileri'],
@@ -114,15 +123,15 @@ const ACTION_DOCS = [
 const TYPE_ALIASES = {
   gather: 'collect', chop: 'collect', get: 'collect',
   kill: 'attack', fight: 'attack',
-  go: 'goto', move: 'goto', elytra: 'fly', elytra_fly: 'fly', glide: 'fly', fly_to: 'fly', takeoff: 'fly', uc: 'fly', uç: 'fly', havalan: 'fly', ucus: 'fly', uçuş: 'fly',
+  go: 'goto', move: 'goto', commands: 'server_commands', list_commands: 'server_commands', plugins: 'server_commands', eklentiler: 'server_commands', komutlar: 'server_commands', has_command: 'server_commands', autotool: 'auto_tool', otomatik_alet: 'auto_tool', alet_sec: 'auto_tool', auto_equip: 'auto_tool', durum: 'status', rapor: 'status', report: 'status', stats: 'status', kesfet: 'explore', keşfet: 'explore', scout: 'explore', roam: 'explore', koru: 'protect', savun: 'protect', defend: 'protect', bodyguard: 'protect', escort: 'protect', yagmala: 'loot', yağmala: 'loot', loot_chests: 'loot', take_all: 'loot', depola: 'store_all', deposit_all: 'store_all', dump: 'store_all', empty_inventory: 'store_all', vein: 'mine_vein', vein_mine: 'mine_vein', damar: 'mine_vein', creative_get: 'get_item', creative_give: 'get_item', get_items: 'get_item', obtain: 'get_item', acquire: 'get_item', al: 'get_item', envantere_al: 'get_item', elytra: 'fly', elytra_fly: 'fly', glide: 'fly', fly_to: 'fly', takeoff: 'fly', uc: 'fly', uç: 'fly', havalan: 'fly', ucus: 'fly', uçuş: 'fly',
   come: 'goto_player', come_here: 'goto_player', come_to: 'goto_player',
   halt: 'stop', cancel: 'stop', idle: 'stop',
-  rest: 'sleep', defend: 'guard', protect: 'guard',
+  rest: 'sleep', 
   toss: 'drop', throw: 'drop', hand: 'give',
   make: 'craft', wear: 'equip', hold: 'equip',
   pause: 'wait', say: 'chat', message: 'chat', whisper: 'chat',
   cmd: 'command', run_command: 'command',
-  strip_mine: 'mine', mine_ore: 'mine', dig_ore: 'mine', dig: 'break', destroy: 'break', build_shelter: 'shelter', explore: 'wander', fishing: 'fish',
+  strip_mine: 'mine', mine_ore: 'mine', dig_ore: 'mine', dig: 'break', destroy: 'break', build_shelter: 'shelter', fishing: 'fish',
   open: 'activate_block', interact: 'activate_block', right_click: 'activate_block',
   deposit: 'store', put: 'store', withdraw: 'take',
   ride: 'mount', unmount: 'dismount', locate: 'find', search: 'find',
@@ -807,6 +816,20 @@ function validateActions(inst, rawActions, ctx = {}) {
       }
       return { target, height: target ? null : (height === null ? 40 : height), seconds }
     },
+    get_item: (a) => ({ item: h.item(a.item || a.block, true), count: h.int(a.count, 64, 1, 2304, 'count') }),
+    status: (a) => ({ item: a.item ? h.item(a.item, true) : null }),
+    explore: (a) => {
+      const d = normName(a.direction || 'random')
+      const dir = { north: 'north', kuzey: 'north', south: 'south', güney: 'south', guney: 'south', east: 'east', doğu: 'east', dogu: 'east', west: 'west', batı: 'west', bati: 'west', random: 'random', rastgele: 'random' }[d]
+      if (!dir) throw new Error('direction north/south/east/west/random olmalı')
+      return { direction: dir, blocks: h.int(a.blocks, 100, 20, 600, 'blocks') }
+    },
+    protect: (a) => ({ target: h.player(a.target || 'sender'), seconds: h.int(a.seconds, 120, 10, 900, 'seconds') }),
+    loot: (a) => ({ radius: h.int(a.radius, 16, 4, 32, 'radius') }),
+    store_all: (a) => ({ radius: h.int(a.radius, 16, 4, 32, 'radius') }),
+    mine_vein: (a) => ({ ...h.blocks(a.block), limit: h.int(a.limit, 40, 1, 128, 'limit') }),
+    auto_tool: (a) => ({ on: !(a.on === false || a.on === 'false' || a.on === 0 || ['off', 'kapat', 'kapali', 'kapalı', 'hayır', 'hayir'].includes(normName(a.on))) }),
+    server_commands: (a) => ({ query: a.query ? String(a.query).toLowerCase().replace(/^\//, '').slice(0, 32) : null }),
     bridge: (a) => ({ blocks: h.int(a.blocks, 10, 1, 64, 'blocks'), item: a.item ? h.placeable(a.item) : null }),
     pillar_up: (a) => ({ height: h.int(a.height, 6, 1, 40, 'height'), item: a.item ? h.placeable(a.item) : null }),
     throw_item: (a) => {

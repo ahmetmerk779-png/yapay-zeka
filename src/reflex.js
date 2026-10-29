@@ -24,25 +24,27 @@ function install(inst) {
   async function recover(pos) {
     if (recovering || !inst.ready || inst.mode === 'busy') return
     recovering = true
+    const pid = inst.planId
     try {
       inst.narrate && inst.narrate('Öldüm; eşyalarımı almak için ölüm noktasına gidiyorum.', 'info')
       inst.mode = 'busy'; inst.activity = 'eşyaları kurtarıyor'
       bot.pathfinder.setGoal(new goals.GoalNear(pos.x, pos.y, pos.z, 2))
       const t0 = Date.now()
-      while (Date.now() - t0 < 60000 && bot.entity.position.distanceTo(pos) > 3) {
+      while (Date.now() - t0 < 60000 && bot.entity.position.distanceTo(pos) > 3 && inst.planId === pid) {
         await new Promise((r) => setTimeout(r, 500))
       }
-      await collectDrops(12000, 16)
+      if (inst.planId === pid) await collectDrops(12000, 16)
+      if (inst.planId !== pid) return   // kullanıcı yeni komut verdi: karışma
     } finally {
-      bot.pathfinder.setGoal(null)
-      if (inst.mode === 'busy') { inst.mode = 'idle'; inst.activity = 'boşta' }
+      if (inst.planId === pid && inst.mode === 'busy') { bot.pathfinder.setGoal(null); inst.mode = 'idle'; inst.activity = 'boşta' }
       recovering = false
     }
   }
 
-  async function collectDrops(ms, radius) {
+  async function collectDrops(ms, radius, abort) {
     const t0 = Date.now()
     while (Date.now() - t0 < ms) {
+      if (abort && abort()) return
       const p = bot.entity.position
       const drop = Object.values(bot.entities)
         .filter((e) => (e.name === 'item' || e.displayName === 'Item') && e.position.distanceTo(p) < radius)
@@ -51,7 +53,7 @@ function install(inst) {
       bot.pathfinder.setGoal(new goals.GoalNear(drop.position.x, drop.position.y, drop.position.z, 0.5))
       await new Promise((r) => setTimeout(r, 900))
     }
-    bot.pathfinder.setGoal(null)
+    if (!(abort && abort())) bot.pathfinder.setGoal(null)
   }
 
   // Totem: ikinci ele otomatik al
@@ -63,14 +65,25 @@ function install(inst) {
     if (t) await bot.equip(t, 'off-hand')
   }), 4000))
 
+  // Bot kendi attığı eşyayı (give/drop/drop_junk) geri toplamasın
+  let lastToss = 0
+  if (typeof bot.toss === 'function' && !bot._tossWrapped) {
+    const rawToss = bot.toss.bind(bot)
+    bot._tossWrapped = true
+    bot.toss = (...args) => { lastToss = Date.now(); return rawToss(...args) }
+  }
+
   // Boşta iken yakındaki düşen eşyaları topla
   inst.timers.push(setInterval(safe(async () => {
-    if (!inst.ready || inst.mode !== 'idle' || recovering) return
+    if (!inst.ready || inst.mode !== 'idle' || recovering || Date.now() - lastToss < 30000) return
+    const me = bot.entity.position
+    if (Object.values(bot.players).some((pl) => pl.username !== bot.username && pl.entity && pl.entity.position.distanceTo(me) < 6)) return   // yanında oyuncu varken toplama (ona atılmış olabilir)
     const p = bot.entity.position
     const near = Object.values(bot.entities).some((e) => e.name === 'item' && e.position.distanceTo(p) < 7)
     if (!near) return
+    const pid = inst.planId
     inst.mode = 'busy'; inst.activity = 'eşya topluyor'
-    try { await collectDrops(5000, 7) } finally { if (inst.mode === 'busy') { inst.mode = 'idle'; inst.activity = 'boşta' } }
+    try { await collectDrops(5000, 7, () => inst.planId !== pid) } finally { if (inst.planId === pid && inst.mode === 'busy') { bot.pathfinder.setGoal(null); inst.mode = 'idle'; inst.activity = 'boşta' } }
   }), 5000))
 
   // Lavda / suda boğulurken yüzeye ve karaya çık

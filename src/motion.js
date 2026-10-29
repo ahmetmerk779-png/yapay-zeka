@@ -101,4 +101,73 @@ function startIdleGlance(inst) {
   return timer
 }
 
-module.exports = { installSmoothLook, tuneMovements, startIdleGlance, wrap, clamp, quant }
+
+// ---------------------------------------------------------------- insan gibi kırma (anti-cheat dostu)
+// Sunucu anti-cheat'leri kırılan bloğun gerçekten NİŞAN ALINAN blok olmasını, menzili ve görüş hattını kontrol eder.
+// Bu sarmalayıcı HER bot.dig çağrısını (yol bulucunun kendi kazmaları dahil) şöyle yapar:
+//   1) bloğun görünen bir noktasını bulur (arada başka blok varsa kırmaz, hata verir)
+//   2) o noktaya yumuşakça bakar, kısa insan tepki süresi bekler
+//   3) imleç gerçekten o bloğu gösteriyor mu doğrular, sonra kırar
+// Kapatmak: HUMANIZE=0
+function installHumanDig(bot) {
+  if (bot._humanDig || process.env.HUMANIZE === '0') return
+  const { Vec3 } = require('vec3')
+  const rawDig = bot.dig.bind(bot)
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+  const rnd = (a, b) => a + Math.random() * (b - a)
+  bot._humanDig = true
+
+  const eyePos = () => bot.entity.position.offset(0, 1.62, 0)
+  const reach = () => (bot.game && bot.game.gameMode === 'creative' ? 5 : 4.4)
+
+  function visiblePoint(block) {
+    if (!bot.world || typeof bot.world.raycast !== 'function') return null
+    const eye = eyePos()
+    const c = block.position.offset(0.5, 0.5, 0.5)
+    const pts = [c]
+    const o = [0.12, 0.5, 0.88]
+    for (const a of o) for (const b of o) {
+      pts.push(block.position.offset(a, 0.001, b), block.position.offset(a, 0.999, b))
+      pts.push(block.position.offset(0.001, a, b), block.position.offset(0.999, a, b))
+      pts.push(block.position.offset(a, b, 0.001), block.position.offset(a, b, 0.999))
+    }
+    pts.sort((p, q) => p.distanceTo(c) - q.distanceTo(c))
+    for (const pt of pts) {
+      const d = pt.minus(eye)
+      const len = d.norm()
+      if (len > reach()) continue
+      let hit = null
+      try { hit = bot.world.raycast(eye, d.scaled(1 / len), reach() + 0.6) } catch (e) { return null }
+      if (hit && hit.position && hit.position.equals(block.position)) return pt
+    }
+    return undefined   // görüş yok
+  }
+
+  bot.dig = async function humanDig(block, forceLook, digFace) {
+    try {
+      if (!block) return rawDig(block, forceLook, digFace)
+      const pt = visiblePoint(block)
+      if (pt === undefined) {
+        const d = eyePos().distanceTo(block.position.offset(0.5, 0.5, 0.5))
+        throw new Error(d > reach() ? `${block.name} menzil dışında` : `${block.name} görüş hattında değil (önünde başka blok var)`)
+      }
+      if (pt) {
+        await bot.lookAt(pt, false)
+        await sleep(rnd(70, 190))                         // insan tepki süresi
+        const cur = typeof bot.blockAtCursor === 'function' ? bot.blockAtCursor(reach() + 0.6) : null
+        if (cur && !cur.position.equals(block.position)) {   // imleç kaydı: bir kez daha nişan al
+          await bot.lookAt(pt, false); await sleep(rnd(60, 120))
+        }
+        await rawDig(block, 'ignore', 'raycast')
+        if (!(bot.game && bot.game.gameMode === 'creative')) await sleep(rnd(30, 140))
+        return
+      }
+    } catch (e) {
+      if (/menzil|görüş hattı/.test(e.message)) throw e
+      // beklenmeyen bir sorun: orijinal kırmaya düş
+    }
+    return rawDig(block, forceLook, digFace)
+  }
+}
+
+module.exports = { installHumanDig, installSmoothLook, tuneMovements, startIdleGlance, wrap, clamp, quant }

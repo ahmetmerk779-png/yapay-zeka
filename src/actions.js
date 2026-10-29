@@ -7,6 +7,7 @@ const { Vec3 } = require('vec3')
 const Sch = require('./schematic')
 const search = require('./search')
 const crystal = require('./crystal')
+const OpBuild = require('./opbuild')
 // builder.js ayrı dosya olarak gerekmesin diye buraya gömüldü
 const Builder = (() => {
 // Blokları elle koymak için sıra planlayıcı (saf mantık, Minecraft'a bağlı değil).
@@ -367,7 +368,8 @@ async function placeAt(inst, itemName, pos, opts = {}) {
   const bot = inst.bot
   const target = bot.blockAt(pos)
   if (target && !REPLACEABLE.has(target.name)) return 'full'
-  const item = findInv(inst, itemName)
+  let item = findInv(inst, itemName)
+  if (!item && isCreative(inst) && (await ensureItem(inst, itemName))) item = findInv(inst, itemName)
   if (!item) return 'noitem'
 
   await moveNear(inst, pos)
@@ -429,13 +431,49 @@ async function follow(inst, a) {
   return ok(`${a.target} takip ediliyor (${dist} blok mesafe)`)
 }
 
-async function goto_player(inst, a) {
-  const e = playerEntity(inst, a.target)
-  if (!e) return fail(`${a.target} çok uzakta, göremiyorum`)
+async function goto_player(inst, a, { cancelled } = {}) {
+  const bot = inst.bot
   const d = a.distance || 2
-  const reached = await goTo(inst, new goals.GoalNear(e.position.x, e.position.y, e.position.z, d))
-  if (reached) { try { await inst.bot.lookAt(e.position.offset(0, e.height || 1.6, 0)) } catch (err) { /* yoksay */ } }
-  return reached ? ok(`${a.target} yanına vardım`) : fail('oraya yol bulamadım')
+  const cancel = cancelled || (() => false)
+  let e = playerEntity(inst, a.target)
+  let last = e ? e.position.clone() : null
+  if (!e) {
+    // görüş dışı: bilinen son konuma git, orada görürsek devam ederiz
+    last = inst.lastSeen && inst.lastSeen[a.target]
+    if (!last) return fail(`${a.target} çok uzakta, göremiyorum (koordinat verirsen oraya giderim)`)
+  }
+  const t0 = Date.now()
+  let ref = bot.entity.position.clone()
+  let refT = Date.now()
+  let stuckN = 0
+  try {
+    while (!cancel() && Date.now() - t0 < 120000) {
+      e = playerEntity(inst, a.target)
+      if (e) { last = e.position.clone(); inst.lastSeen = inst.lastSeen || {}; inst.lastSeen[a.target] = last }
+      const me = bot.entity.position
+      const dist = me.distanceTo(last)
+      if (dist <= d + 0.8 && (!e || Math.abs(me.y - last.y) < 3)) {
+        if (e) { try { await bot.lookAt(e.position.offset(0, e.height || 1.6, 0)) } catch (err) { /* yoksay */ } }
+        bot.pathfinder.setGoal(null)
+        return ok(`${a.target} yanına vardım`)
+      }
+      // hedef hareket ediyorsa dinamik takip, görüş dışıysa sabit nokta
+      const goal = e ? new goals.GoalFollow(e, d) : new goals.GoalNear(last.x, last.y, last.z, d)
+      bot.pathfinder.setGoal(goal, !!e)
+      await sleep(400)
+      // takıldıysa kurtul
+      if (me.distanceTo(ref) > 0.6 || bot.targetDigBlock) { ref = bot.entity.position.clone(); refT = Date.now(); stuckN = 0 }
+      else if (Date.now() - refT > 4500) {
+        refT = Date.now(); stuckN++
+        if (stuckN > 6) return fail('yanına ulaşamadım (yol yok ya da engel aşılamadı)')
+        await unstick(inst, stuckN, goal).catch(() => {})
+      }
+      if (!e && bot.entity.position.distanceTo(last) <= d + 1) return fail(`${a.target}'ı bulamadım (son bildiğim yere geldim ama görünmüyor)`)
+    }
+    return cancel() ? fail('iptal edildi') : fail('zaman aşımı: yanına varamadım')
+  } finally {
+    if (inst.mode !== 'follow') bot.pathfinder.setGoal(null)
+  }
 }
 
 async function goto_(inst, a) {
@@ -1048,7 +1086,16 @@ async function shoot(inst, a, { cancelled }) {
 }
 
 // ---------------------------------------------------------------- inşa
+function bestFiller(inst) {
+  const it = inst.bot.inventory.items().filter((i) => /(_planks|^cobblestone$|^stone$|stone_bricks|^bricks$|^dirt$|cobbled_deepslate|sandstone|^netherrack$|_concrete$|_wool$|_terracotta$)/.test(i.name)).sort((x, y) => y.count - x.count)[0]
+  return it ? it.name : null
+}
+
 async function place(inst, a) {
+  if (!findInv(inst, a.item.name) && !isCreative(inst)) {
+    const alt = bestFiller(inst)
+    if (alt && /(_planks|_log$|cobblestone|^stone$|bricks|dirt|deepslate|sandstone|netherrack|concrete|wool|terracotta)/.test(a.item.name) && !/(stairs|slab|door|fence|trapdoor)/.test(a.item.name)) a = { ...a, item: inst.mcData.itemsByName[alt] || a.item }
+  }
   const res = await placeAt(inst, a.item.name, new Vec3(a.x, a.y, a.z), hintsFor(a.item.name, { facing: worldFacing(inst, a.facing), delay: a.delay }))
   const map = { ok: `${a.item.name} yerleştirdim`, full: 'orası zaten dolu', noitem: `envanterimde ${a.item.name} yok`, noref: 'yaslanacak komşu blok bulamadım' }
   return res === 'ok' ? ok(map.ok) : fail(map[res] || 'yerleştiremedim')
@@ -1207,6 +1254,47 @@ async function placeMany(inst, targets, opts = {}) {
     else todo.push(t)
   }
 
+  // OP ise /fill ve /setblock ile kur (doğrulananlar listeden düşer, kalanlar elle konur)
+  if (opts.cmd !== false && todo.length) {
+    try {
+      const doneSet = await OpBuild.placeTargets(inst, todo, cancelled)
+      if (doneSet.size) {
+        stats.placed += doneSet.size
+        stats.viaCommand = doneSet.size
+        for (let i = todo.length - 1; i >= 0; i--) if (doneSet.has(todo[i])) todo.splice(i, 1)
+      }
+    } catch (e) { /* komut yolu başarısızsa elle devam */ }
+  }
+
+  // Malzeme ikamesi: bir yapı bloğu yetmezse envanterdeki diğer yapı bloklarıyla tamamla (survival)
+  if (!creative && opts.flex !== false) {
+    const FILL = /(_planks|_log$|_wood$|^cobblestone$|^stone$|stone_bricks|^bricks$|^dirt$|^coarse_dirt$|deepslate|sandstone|^netherrack$|_concrete$|_wool$|_terracotta$|^terracotta$|^andesite$|^diorite$|^granite$|^tuff|^blackstone|^basalt|^sand$|^gravel$|^glass$|^mud_bricks$|^prismarine|^end_stone|^purpur)/
+    const BAD = /(stairs|slab|door|fence|_wall$|trapdoor|button|plate|sign|carpet|pane|powder)/
+    const isFill = (n) => FILL.test(n) && !BAD.test(n)
+    const own = {}
+    for (const t of todo) if (!t.kind || t.kind === 'normal') own[t.item] = (own[t.item] || 0) + 1
+    const spare = {}
+    for (const it of bot.inventory.items()) {
+      if (isFill(it.name) && it.name !== 'sand' && it.name !== 'gravel') spare[it.name] = (spare[it.name] || 0) + it.count
+    }
+    for (const n of Object.keys(spare)) spare[n] = Math.max(0, spare[n] - (own[n] || 0))
+    const have = (n) => invCount(inst, n)
+    const used = {}
+    stats.substituted = 0
+    for (const t of todo) {
+      if ((t.kind && t.kind !== 'normal') || !isFill(t.item)) continue
+      used[t.item] = (used[t.item] || 0) + 1
+      if (used[t.item] <= have(t.item)) continue
+      const alt = Object.keys(spare).filter((n) => spare[n] > 0).sort((a, b) => spare[b] - spare[a])[0]
+      if (!alt) continue
+      spare[alt]--
+      used[alt] = (used[alt] || 0) + 1
+      t.item = alt
+      t.blockName = ITEM_TO_BLOCK[alt] || alt
+      stats.substituted++
+    }
+  }
+
   // malzeme kontrolü (creative'de gerekmez)
   const need = {}
   for (const t of todo) need[t.item] = (need[t.item] || 0) + (t.kind === 'double' ? 2 : 1)
@@ -1266,7 +1354,9 @@ async function placeMany(inst, targets, opts = {}) {
 function summarizeBuild(s, label = 'blok') {
   if (s.blocked) return fail(s.blocked)
   const parts = [`${s.placed}/${s.total - s.already} ${label} koydum`]
+  if (s.viaCommand) parts.push(`${s.viaCommand} tanesi OP komutuyla`)
   if (s.already) parts.push(`${s.already} zaten yerinde`)
+  if (s.substituted) parts.push(`${s.substituted} blokta eksik malzemeyi envanterdeki diğer bloklarla tamamladım`)
   if (s.scaffolds) parts.push(`${s.scaffolds} iskele bloğu kurup kırdım`)
   if (s.failed) parts.push(`${s.failed} tanesi olmadı`)
   if (s.noitem) parts.push(`${s.noitem} tanesinde malzeme bitti`)
@@ -1284,6 +1374,7 @@ async function buildPositions(inst, positions, itemName, cancelled) {
 async function fill(inst, a, { cancelled }) {
   const positions = regionPositions(a)
   if (a.clear) {
+    try { const c = await OpBuild.clearPositions(inst, positions, cancelled); if (c >= 0) return ok(`${c} bloğu OP komutuyla temizledim`) } catch (e) { /* elle dene */ }
     let dug = 0
     positions.sort((p, q) => q.y - p.y)
     for (const p of positions) {
@@ -1332,6 +1423,7 @@ async function shelter(inst, a, { cancelled }) {
 
 // ---------------------------------------------------------------- envanter
 async function equip(inst, a) {
+  if (!findInv(inst, a.item.name) && isCreative(inst)) await ensureItem(inst, a.item.name)
   const it = findInv(inst, a.item.name)
   if (!it) return fail(`envanterimde ${a.item.name} yok`)
   try { await inst.bot.equip(it, a.slot); return ok(`${a.item.name} kuşandım`) } catch (e) { return fail(`kuşanamadım (${e.message})`) }
@@ -1346,6 +1438,7 @@ async function drop(inst, a) {
 }
 
 async function give(inst, a) {
+  if (!invCount(inst, a.item.name) && isCreative(inst)) await ensureItem(inst, a.item.name, a.count || 64)
   const have = invCount(inst, a.item.name)
   if (!have) return fail(`envanterimde ${a.item.name} yok`)
   const e = playerEntity(inst, a.target)
@@ -1855,6 +1948,38 @@ async function runBuild(inst, list, offset, cancelled) {
     .filter((e) => !e.pos.equals(feet) && !e.pos.equals(head))
     .map((e) => ({ pos: e.pos, item: e.item, blockName: ITEM_TO_BLOCK[e.item] || e.item, hints: hintsFor(e.item, { facing: e.facing, delay: e.delay }) }))
   return summarizeBuild(await placeMany(inst, targets, { cancelled }))
+}
+
+
+// ---------------------------------------------------------------- hazır redstone devreleri
+// Koordinatlar: x=sağ, y=yukarı, z=ileri (botun baktığı yön). Sinyal ileri (+z) akar.
+function redstoneEntries(a, mcData) {
+  const it = (n) => { const d = mcData.itemsByName[n]; if (!d) throw new Error(`${n} bu sürümde yok`); return d }
+  const E = []
+  const add = (x, y, z, n, extra = {}) => E.push({ x, y, z, item: it(n), ...extra })
+  if (a.kind === 'line' || a.kind === 'lamp') {
+    // kol + toz hattı (her 12 blokta tekrarlayıcı) + lamba. Zemin düz olmalı.
+    const n = a.kind === 'lamp' ? 2 : a.length
+    add(0, 0, 0, 'lever')
+    for (let z = 1; z <= n; z++) {
+      if (z % 12 === 0) add(0, 0, z, 'repeater', { facing: 'back' })   // sinyal ileri aksın: giriş arkada
+      else add(0, 0, z, 'redstone')
+    }
+    add(0, 0, n + 1, 'redstone_lamp')
+  } else if (a.kind === 'pressure_door') {
+    // demir kapı + iki yanında basınç plakası (içeriden ve dışarıdan açılır). Kapı yerleştirilecek zemin gerekir.
+    add(0, 0, 0, 'iron_door', { facing: 'forward' })
+    add(0, 0, -1, 'stone_pressure_plate')
+    add(0, 0, 1, 'stone_pressure_plate')
+  }
+  return E
+}
+
+async function redstone(inst, a, { cancelled }) {
+  let list
+  try { list = redstoneEntries(a, inst.mcData) } catch (e) { return fail(e.message) }
+  if (!list.length) return fail('bilinmeyen devre türü (line, lamp, pressure_door)')
+  return runBuild(inst, list, a.offset, cancelled)
 }
 
 async function build(inst, a, { cancelled }) { return runBuild(inst, a.list, a.offset, cancelled) }
@@ -2908,7 +3033,7 @@ const EXEC = {
   attack, guard, shoot, place, break: break_, fill, shelter, equip, drop, give, craft, smelt, eat,
   use_item, store, take, inspect_chest, trade, activate_block, find, chat, command, wait,
   door, enchant, anvil, fill_bottles, brew, drink, nether_portal, build, write_sign,
-  schematic, schematic_info, list_schematics, download_schematic, web_search, crystal_pvp, duel, custom, skill: custom, make_farm, house,
+  redstone, schematic, schematic_info, list_schematics, download_schematic, web_search, crystal_pvp, duel, custom, skill: custom, make_farm, house,
 }
 
 async function execute(inst, action, ctx) {

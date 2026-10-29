@@ -21,6 +21,8 @@ function single(t, botName) {
   if (/^(dur|b[ıi]rak|iptal|stop|cancel|vazge[cç]|yeter)( artik| art[ıi]k)?$/.test(t)) return [{ type: 'stop' }]
   if (/^(beni |bizi )?(takip et|takip|follow( me)?|pe[sş]imden gel)$/.test(t)) return [{ type: 'follow', target: 'sender' }]
   if (/^(gel|buraya gel|yan[ıi]ma gel|bana gel|come( here)?)$/.test(t)) return [{ type: 'goto_player', target: 'sender' }]
+  if (/^((bana|yan[ıi]ma|buraya) (elytra ile |roketle )?u[cç]|(elytra|roket)(le|\s?ile)? (bana|yan[ıi]ma) u[cç]a?(rak gel)?)$/.test(t)) return [{ type: 'fly', target: 'sender' }]
+  if (/^(u[cç]|elytra (ile )?u[cç]|havalan|fly|takeoff)$/.test(t)) return [{ type: 'fly', height: 60 }]
   if (/^(ye|yemek ye|karn[ıi]n[ıi] doyur|eat)$/.test(t)) return [{ type: 'eat' }]
   if (/^(uyu|yat|ya[gğ]a[gğ]a yat|sleep)$/.test(t)) return [{ type: 'sleep' }]
   if (/^(uyan|wake|kalk)$/.test(t)) return [{ type: 'wake' }]

@@ -40,14 +40,20 @@ function installSmoothLook(bot, opts = {}) {
     const cp = bot.entity.pitch
     const dy = wrap(t.yaw - cy)
     const dp = t.pitch - cp
-    if ((Math.abs(dy) < 0.012 && Math.abs(dp) < 0.012) || Date.now() - st.since > 900) {
+    const mv = !!(bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving())
+    if ((Math.abs(dy) < (mv ? 0.05 : 0.012) && Math.abs(dp) < (mv ? 0.05 : 0.012)) || Date.now() - st.since > (mv ? 250 : 900)) {
       raw(quant(t.yaw), quant(t.pitch), true).catch(() => {})
       finish()
       return
     }
     // yumuşak ivmelenme: uzaktayken hızlı, yaklaşınca yavaş; hafif sabit titreşim
-    const sy = clamp(dy * 0.45, -st.maxYaw, st.maxYaw) + (Math.random() - 0.5) * 0.004
-    const sp = clamp(dp * 0.45, -st.maxPitch, st.maxPitch) + (Math.random() - 0.5) * 0.003
+    // Yürürken (yol bulucu yönü her tick ayarlar) kafa neredeyse anında dönmeli, yoksa bot yanlış yöne bakarak yürür ve takılır
+    const moving = !!(bot.pathfinder && bot.pathfinder.isMoving && bot.pathfinder.isMoving())
+    const k = moving ? 0.92 : 0.45
+    const my = moving ? 1.3 : st.maxYaw
+    const mp = moving ? 0.8 : st.maxPitch
+    const sy = clamp(dy * k, -my, my) + (moving ? 0 : (Math.random() - 0.5) * 0.004)
+    const sp = clamp(dp * k, -mp, mp) + (moving ? 0 : (Math.random() - 0.5) * 0.003)
     raw(quant(cy + sy), quant(clamp(cp + sp, -Math.PI / 2, Math.PI / 2)), true).catch(() => {})
   })
   bot.on('death', () => finish())
@@ -67,6 +73,8 @@ function tuneMovements(mov, mcData) {
   mov.dontMineUnderFallingBlock = true
   mov.allowEntityDetection = true
   mov.liquidCost = 4
+  mov.digCost = 3          // mümkünse kazmak yerine dolaş (yavaş ve takılgan olmasın)
+  mov.placeCost = 4        // iskele/köprü kurmaktan kaçın
   mov.entityCost = 2
   mov.maxDropDown = 4
 }

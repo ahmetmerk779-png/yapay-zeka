@@ -255,6 +255,7 @@ class BotInstance {
       try {   // insan benzeri hareket/kafa çevirme (motion.js yoksa atlanır)
         const Motion = require('./motion')
         Motion.installSmoothLook(bot)
+        Motion.installHumanDig(bot)
         Motion.tuneMovements(this.movements, this.mcData)
         this.timers.push(Motion.startIdleGlance(this))
       } catch (e) { this.log('warn', `motion.js yüklenemedi (kafa çevirme anlık olacak): ${e.message}`) }
@@ -288,6 +289,7 @@ class BotInstance {
           }
         } catch (e) { /* önemsiz */ }
       }, 1000))
+      try { require('./reflex').install(this) } catch (e) { this.log('warn', 'reflex yüklenemedi: ' + e.message) }
       this.timers.push(setInterval(() => this.emit('state', { state: this.getState() }), 1500))
     })
 

@@ -27,6 +27,7 @@ async function available(inst) {
   let verdict = null
   const onMsg = (m) => {
     const s = String(m || '')
+    if (/^(?:\[[^\]]*\]\s*)*<?\w{3,16}>?\s*(?:»|:|>)\s/.test(s)) return   // oyuncu sohbeti, sistem yanıtı değil
     if (/could not set|changed the block|successfully|no blocks were/i.test(s)) verdict = true
     else if (/unknown or incomplete|do not have permission|permission|yetkin|izin|bilinmeyen|geçersiz komut/i.test(s)) verdict = false
   }

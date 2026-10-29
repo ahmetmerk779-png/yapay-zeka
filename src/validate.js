@@ -30,6 +30,7 @@ const ACTION_DOCS = [
   ['plant', '{"type":"plant","item":"oak_sapling","radius":8,"count":4}', 'fidan/tohum/havuç/patates ek (fidan toprağa, ekin sürülmüş tarlaya)'],
   ['bone_meal', '{"type":"bone_meal","radius":8,"count":10}', 'ekin/fidanlara kemik tozu uygula'],
   ['redstone', '{"type":"redstone","kind":"line","length":10}', 'HAZIR REDSTONE devresi (baktığın yöne kurar): kind=line (kol + toz hattı + lamba, uzunsa tekrarlayıcı), lamp (kol + 2 toz + lamba), pressure_door (demir kapı + iki yanda basınç plakası). Gerekenler: redstone, lever, repeater, redstone_lamp, iron_door, stone_pressure_plate. Başka devreler için build ile tek tek blok koy'],
+  ['fly', '{"type":"fly","target":"sender","seconds":40}', 'ELYTRA ile uç (envanterde elytra + firework_rocket gerekir; kalkışı, rokete basmayı, yönelmeyi, inişi kendi yapar). target: oyuncu adı/sender YA DA x,y,z koordinatı; hedef yoksa height ile yukarı çık (örn. height 60). seconds en çok 150'],
   ['bridge', '{"type":"bridge","blocks":10}', 'baktığın yöne köprü kur (boşluk üstünde çömelerek ilerler; item opsiyonel)'],
   ['pillar_up', '{"type":"pillar_up","height":6}', 'zıplayıp altına blok koyarak yukarı çık (kule)'],
   ['throw_item', '{"type":"throw_item","item":"ender_pearl","target":"sender","count":1}', 'eşya fırlat (ender_pearl, snowball, egg, splash_potion); target ya da x,y,z, yoksa ileri'],
@@ -59,7 +60,7 @@ const ACTION_DOCS = [
   ['farm', '{"type":"farm","radius":16}', 'olgun ekinleri hasat et ve yeniden ek'],
   ['fish', '{"type":"fish","seconds":60,"catches":5}', 'olta ile balık tut'],
   ['shear', '{"type":"shear","radius":16}', 'koyunları makasla'],
-  ['breed', '{"type":"breed","animal":"cow"}', 'hayvanları yemle ve çiftleştir'],
+  ['breed', '{"type":"breed"}', 'hayvanları çiftleştir. animal opsiyonel (cow/sheep/pig/chicken...): vermezsen yakında 2+ yetişkini olan ve yemi envanterde olan türü kendi seçer. Yem: inek/koyun wheat, domuz carrot, tavuk wheat_seeds'],
   // Savaş
   ['attack', '{"type":"attack","target":"zombie","count":3}', 'mob\'a saldır ("hostile" = herhangi düşman)'],
   ['guard', '{"type":"guard","radius":16}', 'bulunduğun yeri koru'],
@@ -80,7 +81,7 @@ const ACTION_DOCS = [
   ['store', '{"type":"store","item":"cobblestone","count":"all"}', 'en yakın sandığa eşya koy'],
   ['take', '{"type":"take","item":"iron_ingot","count":5}', 'en yakın sandıktan eşya al'],
   ['inspect_chest', '{"type":"inspect_chest"}', 'en yakın sandığın içeriğine bak'],
-  ['trade', '{"type":"trade","item":"bread","count":1}', 'köylüden bu eşyayı satın al'],
+  ['trade', '{"type":"trade","item":"bread","count":1}', 'köylüyle takas: item=almak istediğin ürün YA DA satmak istediğin eşya (örn. wheat -> zümrüt alırsın). item vermezsen köylünün tekliflerini listeler'],
   // Dünya
   ['activate_block', '{"type":"activate_block","block":"lever"}', 'bloğa sağ tık (kapı, düğme, kol...) ya da x,y,z'],
   ['find', '{"type":"find","block":"diamond_ore"}', 'yakında ara ve koordinatını bildir (block / entity / player)'],
@@ -113,7 +114,7 @@ const ACTION_DOCS = [
 const TYPE_ALIASES = {
   gather: 'collect', chop: 'collect', get: 'collect',
   kill: 'attack', fight: 'attack',
-  go: 'goto', move: 'goto',
+  go: 'goto', move: 'goto', elytra: 'fly', elytra_fly: 'fly', glide: 'fly', fly_to: 'fly', takeoff: 'fly', uc: 'fly', uç: 'fly', havalan: 'fly', ucus: 'fly', uçuş: 'fly',
   come: 'goto_player', come_here: 'goto_player', come_to: 'goto_player',
   halt: 'stop', cancel: 'stop', idle: 'stop',
   rest: 'sleep', defend: 'guard', protect: 'guard',
@@ -517,9 +518,10 @@ function validateActions(inst, rawActions, ctx = {}) {
     }),
     shear: (a) => ({ radius: h.int(a.radius, 16, 4, 48, 'radius') }),
     breed: (a) => {
-      const animal = h.mob(a.animal || a.target)
-      const itemName = a.item ? h.item(a.item, true).name : BREED_ITEMS[animal]
-      if (!itemName) throw new Error(`${animal} için yem belirtmelisin (item)`)
+      // tür verilmezse bot yakındaki türü ve envanterdeki yemi kendisi seçer
+      const raw = a.animal || a.target
+      const animal = raw && !['all', 'hepsi', 'hayvan', 'hayvanlar', 'animals', 'animal'].includes(normName(raw)) ? h.mob(raw) : null
+      const itemName = a.item ? h.item(a.item, true).name : (animal ? BREED_ITEMS[animal] || null : null)
       return { animal, itemName }
     },
     attack: (a) => {
@@ -569,7 +571,7 @@ function validateActions(inst, rawActions, ctx = {}) {
     use_item: (a) => ({ item: a.item ? h.item(a.item, true) : null, ...(a.x !== undefined && a.z !== undefined ? { pos: h.coord(a) } : {}) }),
     store: (a) => ({ item: h.item(a.item, true), count: h.countOrAll(a.count ?? 'all'), ...(a.x !== undefined && a.z !== undefined ? { pos: h.coord(a) } : {}) }),
     take: (a) => ({ item: h.item(a.item), count: h.countOrAll(a.count ?? 'all'), ...(a.x !== undefined && a.z !== undefined ? { pos: h.coord(a) } : {}) }),
-    trade: (a) => ({ item: h.item(a.item), count: h.int(a.count, 1, 1, 64, 'count') }),
+    trade: (a) => ({ item: a.item ? h.item(a.item, true) : null, count: h.int(a.count, 1, 1, 64, 'count') }),
     activate_block: (a) => {
       if (a.block) return { ...h.blocks(a.block) }
       if (a.x !== undefined && a.z !== undefined) return { pos: h.coord(a) }
@@ -791,6 +793,19 @@ function validateActions(inst, rawActions, ctx = {}) {
       const kind = { line: 'line', hat: 'line', lamp: 'lamp', lamba: 'lamp', pressure_door: 'pressure_door', door: 'pressure_door', kapı: 'pressure_door', kapi: 'pressure_door', plate_door: 'pressure_door' }[normName(a.kind || 'line')]
       if (!kind) throw new Error('kind line / lamp / pressure_door olmalı')
       return { kind, length: h.int(a.length, 10, 1, 40, 'length'), offset: h.int(a.offset, 2, 1, 16, 'offset') }
+    },
+    fly: (a) => {
+      const seconds = h.int(a.seconds, 40, 5, 150, 'seconds')
+      const height = a.height !== undefined && a.height !== null ? h.int(a.height, 40, 5, 250, 'height') : null
+      let target = null
+      if (a.x !== undefined && a.z !== undefined) {
+        target = { x: Math.floor(h.num(a.x, 'x')), y: a.y === undefined || a.y === null ? null : Math.floor(h.num(a.y, 'y')), z: Math.floor(h.num(a.z, 'z')) }
+      } else if (a.target !== undefined || a.player !== undefined) {
+        target = { player: h.player(a.target ?? a.player) }
+      } else if (height === null) {
+        target = null
+      }
+      return { target, height: target ? null : (height === null ? 40 : height), seconds }
     },
     bridge: (a) => ({ blocks: h.int(a.blocks, 10, 1, 64, 'blocks'), item: a.item ? h.placeable(a.item) : null }),
     pillar_up: (a) => ({ height: h.int(a.height, 6, 1, 40, 'height'), item: a.item ? h.placeable(a.item) : null }),

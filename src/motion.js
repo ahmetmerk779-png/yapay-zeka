@@ -111,7 +111,6 @@ function startIdleGlance(inst) {
 // Kapatmak: HUMANIZE=0
 function installHumanDig(bot) {
   if (bot._humanDig || process.env.HUMANIZE === '0') return
-  const { Vec3 } = require('vec3')
   const rawDig = bot.dig.bind(bot)
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
   const rnd = (a, b) => a + Math.random() * (b - a)
@@ -145,7 +144,7 @@ function installHumanDig(bot) {
 
   bot.dig = async function humanDig(block, forceLook, digFace) {
     try {
-      if (!block) return rawDig(block, forceLook, digFace)
+      if (!block || block.boundingBox !== 'block') return rawDig(block, forceLook, digFace)   // çiçek/ot/meşale gibi geçilebilir bloklar
       const pt = visiblePoint(block)
       if (pt === undefined) {
         const d = eyePos().distanceTo(block.position.offset(0.5, 0.5, 0.5))

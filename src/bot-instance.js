@@ -184,6 +184,8 @@ class BotInstance {
 
   knowledgeFile() { return path.join(DATA_DIR, `knowledge-${safeName(this.cfg.name)}.json`) }
 
+  memoryFile() { return path.join(DATA_DIR, `plans-${safeName(this.cfg.name)}.json`) }
+
   macrosFile() { return path.join(DATA_DIR, `macros-${safeName(this.cfg.name)}.json`) }
 
   loadMacros() {
@@ -267,6 +269,7 @@ class BotInstance {
       this.loadHomes()
       this.loadKnowledge()
       this.loadMacros()
+      try { this.mem = new (require('./memory').PlanMemory)(this.memoryFile()) } catch (e) { this.mem = null; this.log('warn', 'memory.js yüklenemedi: ' + e.message) }
       this.mode = 'idle'
       this.setStatus('online')
       this.log('info', `Sunucuya girdi. Sürüm: ${bot.version}`)
@@ -586,7 +589,7 @@ class BotInstance {
         plan = { say: ex.plainText, actions: [], dropped: [] }
       } else if (ex.json && typeof ex.json === 'object' && !Array.isArray(ex.json)) {
         const v = validateActions(this, ex.json.actions, { senderPlayer, trusted })
-        plan = { say: typeof ex.json.say === 'string' ? ex.json.say : '', actions: v.out, dropped: v.errors }
+        plan = { say: typeof ex.json.say === 'string' ? ex.json.say : '', actions: v.out, dropped: v.errors, raw: ex.json.actions }
         problems = v.errors
       } else {
         problems = ['Geçerli bir JSON nesnesi ayrıştırılamadı (sözdizimi hatası).']
@@ -624,6 +627,29 @@ class BotInstance {
           return
         }
         this.log('info', `Yerel komut doğrulanamadı (${v.errors.join(' | ') || 'boş'}), yapay zekaya soruluyor`)
+      }
+    }
+    // Öz-öğrenme: komutlar + hatırlanan planlar
+    if (trusted && label !== 'Sistem' && this.mem) {
+      const t = String(message).toLowerCase().trim()
+      if (/^(öğrendiklerini sil|ogrendiklerini sil|öğrenilenleri sil|hafızayı sil|hafizayi sil|unut hepsini)$/.test(t)) { this.mem.clear(); this.say('Öğrendiğim planların hepsini sildim.'); return }
+      if (/^(ne öğrendin|ne ogrendin|öğrendiklerin|ogrendiklerin)$/.test(t)) { const st = this.mem.stats(); this.say(`${st.total} komut hatırlıyorum, ${st.ready} tanesini yapay zekaya sormadan yapabilirim.`); return }
+      if (/^(hay[ıi]r|yanl[ıi][sş]|olmad[ıi]|[öo]yle de[gğ]il|yanl[ıi][sş] yapt[ıi]n)(?:\s|$|[,.!])/.test(t) && this.lastLearnKey) {
+        this.mem.forget(this.lastLearnKey, this.bot.username); this.log('info', `Düzeltme alındı, "${this.lastLearnKey}" planı unutuldu.`); this.lastLearnKey = null
+      } else {
+        const hit = this.mem.lookup(message, this.bot.username)
+        if (hit) {
+          const v = validateActions(this, hit.actions, { senderPlayer, trusted })
+          if (v.out.length && !v.errors.length) {
+            this.lastQuery = message
+            this.lastUserQuery = message
+            this.lastLearnKey = message
+            this.log('ai', `(öğrenilmiş plan, ${hit.wins} başarı, yapay zeka kullanılmadı) ${JSON.stringify(v.out.map(simplify))}`)
+            this.runPlan(v.out, senderPlayer, true, { key: message, actions: hit.actions, cached: true }).catch((e) => this.log('error', `Plan hatası: ${e.message}`))
+            return
+          }
+          this.mem.fail(message, this.bot.username)
+        }
       }
     }
     if (!this.cfg.groqKey) { this.log('warn', 'Groq anahtarı yok, bu mesajı yerel çözücü anlayamadı.'); return }
@@ -676,7 +702,10 @@ class BotInstance {
     if (trusted && plan.dropped && plan.dropped.length) {
       this.narrate(`İstenen bazı eylemler geçersiz olduğu için atlandı: ${plan.dropped.join(' | ')}`, 'dropped', true)
     }
-    if (plan.actions.length) this.runPlan(plan.actions, senderPlayer, true).catch((e) => this.log('error', `Plan hatası: ${e.message}`))
+    let learn = null
+    if (trusted && label !== 'Sistem' && this.mem && !(plan.dropped && plan.dropped.length) && this.mem.eligible(message, plan.raw)) learn = { key: message, actions: plan.raw }
+    if (learn) this.lastLearnKey = message
+    if (plan.actions.length) this.runPlan(plan.actions, senderPlayer, true, learn).catch((e) => this.log('error', `Plan hatası: ${e.message}`))
   }
 
   // ------------------------------------------------------------ plan çalıştırıcı
@@ -688,7 +717,7 @@ class BotInstance {
     this.mode = 'idle'
   }
 
-  async runPlan(actions, sender, narrateResult = true) {
+  async runPlan(actions, sender, narrateResult = true, learn = null) {
     const id = ++this.planId
     this.stopEverything()
     this.mode = 'busy'
@@ -714,6 +743,13 @@ class BotInstance {
     if (cancelled()) return
     if (this.mode === 'busy') this.mode = 'idle'
     this.activity = this.mode === 'follow' ? 'oyuncuyu takip ediyor' : this.mode === 'guard' ? 'nöbette' : 'boşta'
+    if (learn && this.mem) {
+      const allOk = results.length === actions.length && results.every((r) => r.ok)
+      try {
+        if (allOk) { const e = this.mem.win(learn.key, learn.actions, this.bot.username); if (e && e.wins === 2) this.log('info', `Öğrendim: "${learn.key}" artık yapay zekaya sormadan yapılacak.`) }
+        else this.mem.fail(learn.key, this.bot.username)
+      } catch (e) { /* önemsiz */ }
+    }
     this.lastResults.push(...results.map((r) => `${r.type}: ${r.ok ? 'başarılı' : 'BAŞARISIZ'} - ${r.msg}`))
     if (this.lastResults.length > 12) this.lastResults.splice(0, this.lastResults.length - 12)
 

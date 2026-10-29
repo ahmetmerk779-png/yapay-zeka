@@ -14,13 +14,24 @@ function enabled(inst) {
   return true
 }
 
-// Yetki yoklaması: bulunduğu hücreyi aynı bloğa "setblock" eder (zararsız) ve yanıta bakar.
+// Yetki + mod tespiti. Sunucu, komut ağacını (declare_commands) oyuncunun yetkisine göre süzerek gönderir:
+// setblock+fill varsa OP'dir (vanilla modu); yoksa WorldEdit (//set) varsa o kullanılır. Ağaç yoksa zararsız bir /setblock ile yoklanır.
 async function available(inst) {
   if (!enabled(inst)) return false
   const bot = inst.bot
-  if (inst.cfg && inst.cfg.opBuild === true) return true
+  if (inst.cfg && inst.cfg.opBuild === true) { inst._op = { v: true, mode: 'vanilla', t: Date.now() }; return true }
   const now = Date.now()
+  if (inst._opProbeReset) { inst._op = null; inst._opProbeReset = false }
   if (inst._op && now - inst._op.t < 600000) return inst._op.v
+  const has = (n) => (inst.hasCmd ? inst.hasCmd(n) : false)
+  if (inst.serverCmds && inst.serverCmds.size) {
+    let mode = null
+    if (has('setblock') && has('fill')) mode = 'vanilla'
+    else if (has('//set') && has('//pos1') && has('//pos2')) mode = 'we'
+    inst._op = { v: !!mode, mode, t: now }
+    if (inst.log) inst.log('info', mode === 'vanilla' ? 'OP yetkisi var: yapılarda /fill ve /setblock kullanılacak.' : mode === 'we' ? 'WorldEdit var: yapılarda //pos1 //pos2 //set kullanılacak.' : 'OP/WorldEdit yetkisi yok: bloklar elle konacak.')
+    return !!mode
+  }
   const p = bot.entity.position.floored()
   const spot = [p, p.offset(0, 1, 0)].find((q) => { const b = bot.blockAt(q); return b && b.name === 'air' })
   if (!spot) return false   // ölçemedik; sonraki seferde dene
@@ -37,7 +48,7 @@ async function available(inst) {
     const t0 = Date.now()
     while (verdict === null && Date.now() - t0 < 2500) await sleep(100)
   } finally { bot.removeListener('messagestr', onMsg) }
-  inst._op = { v: verdict === true, t: now }
+  inst._op = { v: verdict === true, mode: verdict === true ? 'vanilla' : null, t: now }
   if (inst.log) inst.log('info', verdict === true ? 'OP yetkisi var: yapılarda /fill ve /setblock kullanılacak.' : 'OP yetkisi yok (ya da komut yanıtı alınamadı): bloklar elle konacak.')
   return inst._op.v
 }
@@ -80,7 +91,13 @@ async function runBoxes(inst, list, cancelled) {
   for (const b of list.slice(0, 150)) {
     if (cancelled && cancelled()) break
     const single = b.x1 === b.x2 && b.y1 === b.y2 && b.z1 === b.z2
-    bot.chat(single ? `/setblock ${b.x1} ${b.y1} ${b.z1} ${b.block}` : `/fill ${b.x1} ${b.y1} ${b.z1} ${b.x2} ${b.y2} ${b.z2} ${b.block}`)
+    if (inst._op && inst._op.mode === 'we') {
+      bot.chat(`//pos1 ${b.x1},${b.y1},${b.z1}`); await sleep(250)
+      bot.chat(`//pos2 ${b.x2},${b.y2},${b.z2}`); await sleep(250)
+      bot.chat(`//set ${b.block}`)
+    } else {
+      bot.chat(single ? `/setblock ${b.x1} ${b.y1} ${b.z1} ${b.block}` : `/fill ${b.x1} ${b.y1} ${b.z1} ${b.x2} ${b.y2} ${b.z2} ${b.block}`)
+    }
     n++
     await sleep(350)
   }

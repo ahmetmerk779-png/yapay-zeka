@@ -113,7 +113,7 @@ const ACTION_DOCS = [
 const TYPE_ALIASES = {
   gather: 'collect', chop: 'collect', get: 'collect',
   kill: 'attack', fight: 'attack',
-  go: 'goto', walk: 'goto', move: 'goto',
+  go: 'goto', move: 'goto',
   come: 'goto_player', come_here: 'goto_player', come_to: 'goto_player',
   halt: 'stop', cancel: 'stop', idle: 'stop',
   rest: 'sleep', defend: 'guard', protect: 'guard',
@@ -124,7 +124,7 @@ const TYPE_ALIASES = {
   strip_mine: 'mine', mine_ore: 'mine', dig_ore: 'mine', dig: 'break', destroy: 'break', build_shelter: 'shelter', explore: 'wander', fishing: 'fish',
   open: 'activate_block', interact: 'activate_block', right_click: 'activate_block',
   deposit: 'store', put: 'store', withdraw: 'take',
-  ride: 'mount', unmount: 'dismount', locate: 'find', search: 'find', scan: 'find',
+  ride: 'mount', unmount: 'dismount', locate: 'find', search: 'find',
   harvest: 'farm', crops: 'farm', cook: 'smelt', bow: 'shoot',
   pick_up: 'pickup', collect_items: 'pickup',
   rotate: 'turn', spin: 'turn', head: 'look_around', scan: 'look_around', run_away: 'flee', escape: 'flee', orbit: 'circle', strafe: 'circle', gesture: 'emote', dance: 'emote', wave: 'emote', go_forward: 'walk', step: 'walk', macro: 'custom', script: 'custom', sequence: 'custom', routine: 'custom', pvp: 'duel', spar: 'duel', fight_me: 'duel', duello: 'duel', portal: 'nether_portal', enchanting: 'enchant', brewing: 'brew', potion: 'brew', construct: 'build',

@@ -29,6 +29,7 @@ const ACTION_DOCS = [
   ['chop_tree', '{"type":"chop_tree","count":1}', 'ağacı tamamen kes (alttan üste), düşenleri topla, fidan varsa yeniden dik'],
   ['plant', '{"type":"plant","item":"oak_sapling","radius":8,"count":4}', 'fidan/tohum/havuç/patates ek (fidan toprağa, ekin sürülmüş tarlaya)'],
   ['bone_meal', '{"type":"bone_meal","radius":8,"count":10}', 'ekin/fidanlara kemik tozu uygula'],
+  ['redstone', '{"type":"redstone","kind":"line","length":10}', 'HAZIR REDSTONE devresi (baktığın yöne kurar): kind=line (kol + toz hattı + lamba, uzunsa tekrarlayıcı), lamp (kol + 2 toz + lamba), pressure_door (demir kapı + iki yanda basınç plakası). Gerekenler: redstone, lever, repeater, redstone_lamp, iron_door, stone_pressure_plate. Başka devreler için build ile tek tek blok koy'],
   ['bridge', '{"type":"bridge","blocks":10}', 'baktığın yöne köprü kur (boşluk üstünde çömelerek ilerler; item opsiyonel)'],
   ['pillar_up', '{"type":"pillar_up","height":6}', 'zıplayıp altına blok koyarak yukarı çık (kule)'],
   ['throw_item', '{"type":"throw_item","item":"ender_pearl","target":"sender","count":1}', 'eşya fırlat (ender_pearl, snowball, egg, splash_potion); target ya da x,y,z, yoksa ileri'],
@@ -707,12 +708,14 @@ function validateActions(inst, rawActions, ctx = {}) {
         const tot = {}
         bot.inventory.items().forEach((i) => { if (BUILD_OK.test(i.name)) tot[i.name] = (tot[i.name] || 0) + i.count })
         const best = Object.entries(tot).sort((x, y) => y[1] - x[1])[0]
-        if (best && best[1] >= need) auto = best[0]
+        if (best) auto = best[0]   // yetmezse inşa sırasında envanterdeki diğer bloklarla tamamlanır
       }
+      // Bilinmeyen blok adı evi iptal etmesin: otomatik/varsayılan bloğa düş
+      const pick = (v, def) => { if (!v) return h.placeable(def); try { return h.placeable(v) } catch (e) { return h.placeable(def) } }
       const W = a.wall || auto || 'oak_planks'
       return {
         size,
-        wall: h.placeable(W), floor: h.placeable(a.floor || auto || a.wall || 'cobblestone'), roof: h.placeable(a.roof || auto || a.wall || 'oak_planks'),
+        wall: pick(W, auto || 'oak_planks'), floor: pick(a.floor || auto || a.wall || 'cobblestone', auto || 'cobblestone'), roof: pick(a.roof || auto || a.wall || 'oak_planks', auto || 'oak_planks'),
         glass: h.placeable(a.glass || 'glass'), door: h.placeable(a.door || 'oak_door'), offset: h.int(a.offset, 2, 1, 16, 'offset'),
       }
     },
@@ -784,6 +787,11 @@ function validateActions(inst, rawActions, ctx = {}) {
     chop_tree: (a) => ({ count: h.int(a.count, 1, 1, 20, 'count') }),
     plant: (a) => ({ item: h.item(a.item || 'wheat_seeds', true), radius: h.int(a.radius, 8, 2, 24, 'radius'), count: h.int(a.count, 8, 1, 64, 'count') }),
     bone_meal: (a) => ({ radius: h.int(a.radius, 8, 2, 24, 'radius'), count: h.int(a.count, 10, 1, 64, 'count') }),
+    redstone: (a) => {
+      const kind = { line: 'line', hat: 'line', lamp: 'lamp', lamba: 'lamp', pressure_door: 'pressure_door', door: 'pressure_door', kapı: 'pressure_door', kapi: 'pressure_door', plate_door: 'pressure_door' }[normName(a.kind || 'line')]
+      if (!kind) throw new Error('kind line / lamp / pressure_door olmalı')
+      return { kind, length: h.int(a.length, 10, 1, 40, 'length'), offset: h.int(a.offset, 2, 1, 16, 'offset') }
+    },
     bridge: (a) => ({ blocks: h.int(a.blocks, 10, 1, 64, 'blocks'), item: a.item ? h.placeable(a.item) : null }),
     pillar_up: (a) => ({ height: h.int(a.height, 6, 1, 40, 'height'), item: a.item ? h.placeable(a.item) : null }),
     throw_item: (a) => {

@@ -1018,23 +1018,60 @@ async function shear(inst, a, { cancelled }) {
   return got > 0 ? ok(`${got} yün kırptım`) : fail(sheep.length ? 'koyunlar zaten kırpılmış olabilir' : 'yakında koyun yok')
 }
 
+const BREED_FOODS = {
+  cow: ['wheat'], sheep: ['wheat'], mooshroom: ['wheat'], goat: ['wheat'], pig: ['carrot', 'potato', 'beetroot'], chicken: ['wheat_seeds', 'beetroot_seeds', 'melon_seeds', 'pumpkin_seeds'],
+  horse: ['golden_carrot', 'golden_apple'], donkey: ['golden_carrot', 'golden_apple'], rabbit: ['carrot', 'golden_carrot', 'dandelion'], llama: ['hay_block'],
+  wolf: ['beef', 'porkchop', 'mutton', 'chicken', 'rotten_flesh'], cat: ['cod', 'salmon'], fox: ['sweet_berries', 'glow_berries'], turtle: ['seagrass'],
+  bee: ['poppy', 'dandelion', 'blue_orchid', 'allium', 'azure_bluet', 'cornflower'], camel: ['cactus'], panda: ['bamboo'],
+}
+
 async function breed(inst, a, { cancelled }) {
   const bot = inst.bot
-  const food = findInv(inst, a.itemName)
-  if (!food) return fail(`envanterimde ${a.itemName} yok`)
-  const animals = Object.values(bot.entities)
-    .filter((e) => e.name === a.animal && e.position.distanceTo(bot.entity.position) <= 20)
-    .sort((x, y) => x.position.distanceTo(bot.entity.position) - y.position.distanceTo(bot.entity.position))
-    .slice(0, 2)
-  if (animals.length < 2) return fail(`çiftleştirmek için en az 2 ${a.animal} lazım, ${animals.length} tane buldum`)
-  let fed = 0
-  for (const an of animals) {
-    if (cancelled()) break
-    await goTo(inst, new goals.GoalNear(an.position.x, an.position.y, an.position.z, 2))
-    try { await bot.equip(food, 'hand'); await bot.activateEntity(an); fed++ } catch (e) { /* sıradaki */ }
-    await sleep(400)
+  const me = bot.entity.position
+  const isBaby = (e) => {
+    const def = inst.mcData.entitiesByName[e.name]
+    return !!(def && def.height && e.height && e.height < def.height * 0.8)
   }
-  return fed === 2 ? ok(`iki ${a.animal} yemledim`) : fail(`sadece ${fed} hayvanı yemleyebildim`)
+  const near = (name) => Object.values(bot.entities)
+    .filter((e) => e.name === name && e.position.distanceTo(me) <= 32 && !isBaby(e))
+    .sort((x, y) => x.position.distanceTo(me) - y.position.distanceTo(me))
+  const foodFor = (name) => {
+    const list = a.itemName ? [a.itemName] : (BREED_FOODS[name] || [])
+    return list.map((n) => findInv(inst, n)).find(Boolean) || null
+  }
+  // Tür belirtilmediyse: yakında en az 2 yetişkini olan ve yemi envanterde olan ilk tür
+  const species = a.animal ? [a.animal] : Object.keys(BREED_FOODS)
+  let pick = null
+  const report = []
+  for (const sp of species) {
+    const list = near(sp)
+    if (list.length === 0) continue
+    const food = foodFor(sp)
+    report.push(`${sp} x${list.length}${food ? '' : ` (yem yok: ${(BREED_FOODS[sp] || [])[0]})`}`)
+    if (list.length >= 2 && food && !pick) pick = { sp, list: list.slice(0, 2), food }
+  }
+  if (!pick) {
+    if (!report.length) return fail(`32 blok çevrede çiftleştirilecek hayvan göremedim${a.animal ? ` (${a.animal})` : ''}`)
+    return fail(`çiftleştiremedim. Yakındakiler: ${report.join(', ')}. Her tür için en az 2 yetişkin ve envanterde yemi (örn. inek/koyun için wheat) olmalı`)
+  }
+  let fed = 0
+  for (const an of pick.list) {
+    if (cancelled()) break
+    for (let t = 0; t < 3; t++) {
+      const cur = bot.entities[an.id] || an
+      await goTo(inst, new goals.GoalNear(cur.position.x, cur.position.y, cur.position.z, 1.8))
+      try {
+        await bot.equip(findInv(inst, pick.food.name) || pick.food, 'hand')
+        await bot.lookAt(cur.position.offset(0, (cur.height || 1) * 0.6, 0), true)
+        await sleep(160)
+        await bot.activateEntity(cur)
+        fed++
+        break
+      } catch (e) { await sleep(300) }
+    }
+    await sleep(450)
+  }
+  return fed === 2 ? ok(`iki ${pick.sp} yemledim (${pick.food.name}); bebek çıkması birkaç saniye sürer`) : fail(`sadece ${fed}/2 ${pick.sp} yemleyebildim`)
 }
 
 // ---------------------------------------------------------------- savaş
@@ -1675,20 +1712,31 @@ async function inspect_chest(inst, a) {
 
 async function trade(inst, a) {
   const bot = inst.bot
-  const e = nearestEntity(inst, (x) => x.name === 'villager' || x.name === 'wandering_trader', 32)
-  if (!e) return fail('yakında köylü yok')
+  const e = nearestEntity(inst, (x) => x.name === 'villager' || x.name === 'wandering_trader', 40)
+  if (!e) return fail('40 blok çevrede köylü ya da gezgin tüccar göremedim')
+  // Meslek yoksa (nitwit / işsiz) takas olmaz
   await goTo(inst, new goals.GoalNear(e.position.x, e.position.y, e.position.z, 2))
+  const cur = bot.entities[e.id] || e
+  try { await bot.lookAt(cur.position.offset(0, (cur.height || 1.8) * 0.8, 0), true) } catch (err) { /* yoksay */ }
   let v
-  try { v = await bot.openVillager(e) } catch (err) { return fail(`köylüyle konuşamadım (${err.message})`) }
+  try { v = await bot.openVillager(cur) } catch (err) { return fail(`köylüyle konuşamadım (${err.message}). İşsiz köylüler (yeşil cüppeli) takas yapmaz; meslek bloğu (örn. fletching_table, lectern) koymak gerekir`) }
   try {
-    const idx = v.trades.findIndex((t) => t.outputItem && t.outputItem.name === a.item.name && !t.tradeDisabled)
-    if (idx === -1) {
-      const offers = v.trades.map((t) => t.outputItem && t.outputItem.name).filter(Boolean).slice(0, 8).join(', ')
-      return fail(`köylü ${a.item.name} satmıyor. Sattıkları: ${offers || 'yok'}`)
+    const trades = v.trades || []
+    const nm = (it) => (it ? `${it.count || 1} ${it.name}` : null)
+    const describe = (t) => `${[nm(t.inputItem1), nm(t.inputItem2)].filter(Boolean).join(' + ')} -> ${nm(t.outputItem)}${t.tradeDisabled ? ' (tükenmiş)' : ''}`
+    if (!trades.length) return fail('bu köylünün takas listesi boş (işsiz olabilir)')
+    if (!a.item) return ok(`köylünün teklifleri: ${trades.slice(0, 8).map(describe).join(' | ')}`)
+    // önce "ürün olarak istenen" eşleşmesi, yoksa "verdiğim eşya" eşleşmesi (örn. buğday satıp zümrüt almak)
+    let idx = trades.findIndex((t) => t.outputItem && t.outputItem.name === a.item.name && !t.tradeDisabled)
+    if (idx === -1) idx = trades.findIndex((t) => t.inputItem1 && t.inputItem1.name === a.item.name && !t.tradeDisabled)
+    if (idx === -1) return fail(`köylüde ${a.item.name} yok. Teklifler: ${trades.slice(0, 8).map(describe).join(' | ')}`)
+    const t = trades[idx]
+    for (const inp of [t.inputItem1, t.inputItem2]) {
+      if (inp && invCount(inst, inp.name) < (inp.count || 1)) return fail(`takas için ${inp.count || 1} ${inp.name} lazım, ${invCount(inst, inp.name)} tane var (teklif: ${describe(t)})`)
     }
     await bot.trade(v, idx, a.count)
-    return ok(`köylüden ${a.item.name} aldım`)
-  } catch (err) { return fail(`takas olmadı (${err.message})`) } finally { try { v.close() } catch (err) {} }
+    return ok(`takas yaptım: ${describe(t)} (x${a.count})`)
+  } catch (err) { return fail(`takas olmadı (${err.message})`) } finally { try { v.close() } catch (err) { /* yoksay */ } }
 }
 
 // ---------------------------------------------------------------- dünya
@@ -2841,6 +2889,138 @@ async function bridge(inst, a, { cancelled }) {
 }
 
 // Zıplayıp altına blok koyarak yukarı çık (kule/pillar)
+
+// ---------------------------------------------------------------- elytra ile uçuş (roketli)
+// Kalkış: zıpla -> havadayken kanat aç (elytraFly) -> roketle hız al. Hedefe yönel, yaklaşınca alçal ve in.
+// Mineflayer'da pitch POZİTİF = yukarı. Roket, bakılan yönde hızlandırır.
+async function fly(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const items = () => bot.inventory.items()
+  const torso = bot.inventory.slots[6]
+  let elytra = items().find((i) => i.name === 'elytra') || (torso && torso.name === 'elytra' ? torso : null)
+  if (!elytra) return fail('elytram yok (envanterimde elytra olmalı)')
+  const rocketCount = () => items().filter((i) => i.name === 'firework_rocket').reduce((n, i) => n + i.count, 0)
+  if (rocketCount() === 0) return fail('roketim (firework_rocket) yok; roket olmadan kalkış yapamam')
+  const prevTorso = torso && torso.name !== 'elytra' ? torso.name : null
+  try { if (!torso || torso.name !== 'elytra') await bot.equip(elytra, 'torso') } catch (e) { return fail(`elytra giyemedim (${e.message})`) }
+
+  const sl = bot.smoothLook
+  const wasFast = sl ? sl.fast : false
+  if (sl) sl.fast = true
+  const t0 = Date.now()
+  const maxMs = a.seconds * 1000
+  let rockets = 0
+  let lastRocket = 0
+  let started = false
+  let flewTicks = 0
+  let result = null
+  const heldRocket = async () => {
+    const r = items().find((i) => i.name === 'firework_rocket')
+    if (!r) return false
+    if (!bot.heldItem || bot.heldItem.name !== 'firework_rocket') { try { await bot.equip(r, 'hand') } catch (e) { return false } }
+    return true
+  }
+  const useRocket = async () => {
+    if (!(await heldRocket())) return false
+    try { bot.activateItem(); rockets++; lastRocket = Date.now(); return true } catch (e) { return false }
+  }
+  const aim = (yaw, pitch) => { try { bot.look(yaw, Math.max(-1.2, Math.min(1.2, pitch)), true) } catch (e) { /* yoksay */ } }
+  const wrapPi = (x) => { let y = (x + Math.PI) % (2 * Math.PI); if (y < 0) y += 2 * Math.PI; return y - Math.PI }
+
+  try {
+    bot.pathfinder.setGoal(null)
+    // hedef konumu
+    const targetPos = () => {
+      if (a.target && a.target.player) { const e = playerEntity(inst, a.target.player); return e ? e.position : null }
+      if (a.target) return new Vec3(a.target.x, a.target.y === null ? bot.entity.position.y : a.target.y, a.target.z)
+      return null
+    }
+    const startY = bot.entity.position.y
+    const wantY = a.height ? startY + a.height : null
+
+    // ---- kalkış
+    const dir0 = (() => { const t = targetPos(); if (!t) return bot.entity.yaw; const p = bot.entity.position; return Math.atan2(-(t.x - p.x), -(t.z - p.z)) })()
+    aim(dir0, 0.6)
+    await sleep(250)
+    if (bot.entity.onGround) { bot.setControlState('jump', true); await sleep(120); bot.setControlState('jump', false) }
+    await sleep(380)
+    for (let k = 0; k < 4 && !started; k++) {
+      try {
+        if (typeof bot.elytraFly === 'function') await bot.elytraFly()
+        else bot._client.write('entity_action', { entityId: bot.entity.id, actionId: 8, jumpBoost: 0 })
+        started = true
+      } catch (e) { await sleep(250) }   // henüz havada değilsek tekrar dene
+    }
+    if (!started) return fail('kanatları açamadım (havada olmam gerekiyor; yüksekçe bir yerden dene)')
+    await sleep(150)
+    await useRocket()
+
+    // ---- uçuş döngüsü
+    while (!cancelled() && Date.now() - t0 < maxMs) {
+      await sleep(120)
+      const pos = bot.entity.position
+      const vel = bot.entity.velocity
+      const speed = Math.hypot(vel.x, vel.y, vel.z) * 20   // blok/sn
+      const flying = !!bot.entity.elytraFlying
+      if (flying) flewTicks++
+      if (!flying && bot.entity.onGround && Date.now() - t0 > 2500) break
+      if (!flying && !bot.entity.onGround && Date.now() - t0 > 2000 && flewTicks === 0) {
+        try { if (typeof bot.elytraFly === 'function') await bot.elytraFly() } catch (e) { /* yoksay */ }
+      }
+      const tp = targetPos()
+      let yaw = bot.entity.yaw
+      let pitch = 0.35
+      let wantRocket = false
+      if (tp) {
+        const dx = tp.x - pos.x
+        const dz = tp.z - pos.z
+        const hd = Math.hypot(dx, dz)
+        yaw = Math.atan2(-dx, -dz)
+        const dy = tp.y - pos.y
+        if (hd < 14) {
+          // yaklaştık: alçal ve in
+          pitch = -0.35
+          if (pos.y - tp.y < 3) pitch = 0.05
+          if (hd < 4 && bot.entity.onGround) break
+        } else if (dy > 8) { pitch = 0.6; wantRocket = true }
+        else {
+          // seyir: hedef irtifayı koru, hız düşünce roket
+          pitch = Math.max(-0.5, Math.min(0.5, Math.atan2(dy, Math.max(hd, 1)) * 0.8))
+          wantRocket = speed < 22
+        }
+      } else if (wantY !== null) {
+        if (pos.y < wantY) { pitch = 0.8; wantRocket = true } else { pitch = -0.05; if (Date.now() - t0 > 6000 && speed < 12) wantRocket = false }
+        if (pos.y >= wantY && Date.now() - t0 > 4000) { result = ok(`${Math.round(pos.y)} yüksekliğe çıktım (${rockets} roket)`); break }
+      } else {
+        wantRocket = speed < 22   // hedefsiz: ileri süzül
+      }
+      aim(yaw + (Math.random() - 0.5) * 0.01, pitch)
+      if (wantRocket && rocketCount() > 0 && Date.now() - lastRocket > 2300 && speed < 30) await useRocket()
+      if (wantRocket && rocketCount() === 0 && speed < 8) { result = fail(`roketim bitti (${rockets} kullandım), süzülerek devam ediyorum`); }
+      if (bot.health < 5) break
+    }
+    // ---- iniş: yere değene kadar hafif alçal
+    const tEnd = Date.now()
+    while (!cancelled() && !bot.entity.onGround && Date.now() - tEnd < 20000) {
+      const tp = targetPos()
+      const pos = bot.entity.position
+      const yaw = tp ? Math.atan2(-(tp.x - pos.x), -(tp.z - pos.z)) : bot.entity.yaw
+      const below = bot.blockAt(pos.offset(0, -6, 0))
+      aim(yaw, below && below.name !== 'air' ? 0.4 : -0.25)   // yere yakınsa burnu kaldır (yavaşla)
+      await sleep(120)
+    }
+    const p = bot.entity.position
+    return result || ok(`uçtum: ${rockets} roket kullandım, şu an (${Math.round(p.x)}, ${Math.round(p.y)}, ${Math.round(p.z)})`)
+  } finally {
+    if (sl) sl.fast = wasFast
+    for (const c of ['jump', 'forward', 'sprint']) bot.setControlState(c, false)
+    if (prevTorso && bot.entity.onGround) {
+      const c = items().find((i) => i.name === prevTorso)
+      if (c) { try { await bot.equip(c, 'torso') } catch (e) { /* yoksay */ } }
+    }
+  }
+}
+
 async function pillar_up(inst, a, { cancelled }) {
   const bot = inst.bot
   const name = tempBlockName(inst, a.item)
@@ -3035,7 +3215,7 @@ function shapeEntries(a) {
 async function build_shape(inst, a, { cancelled }) { return runBuild(inst, shapeEntries(a), a.offset, cancelled) }
 
 const EXEC = {
-  stop, follow, goto_player, goto: goto_, goto_block, wander, look_at, jump, sneak, set_home, go_home,
+  fly, stop, follow, goto_player, goto: goto_, goto_block, wander, look_at, jump, sneak, set_home, go_home,
   turn, face, look_around, walk, flee, circle, emote, chop_tree, plant, bone_meal, bridge, pillar_up, throw_item, bucket, light_area, patrol, shield, drop_junk, armor, build_shape, mount, dismount, sleep: sleep_, wake, collect, mine, pickup, tunnel, dig_down, farm, fish, shear, breed,
   attack, guard, shoot, place, break: break_, fill, shelter, equip, drop, give, craft, smelt, eat,
   use_item, store, take, inspect_chest, trade, activate_block, find, chat, command, wait,

@@ -148,6 +148,7 @@ class BotInstance {
     let bot
     try {
       bot = mineflayer.createBot(opts)
+      try { require('./servercmds').install(this, bot) } catch (e) { this.log('warn', 'servercmds yüklenemedi: ' + e.message) }
     } catch (e) {
       this.log('error', `Bot oluşturulamadı: ${e.message}`)
       this.setStatus('error')
@@ -256,6 +257,7 @@ class BotInstance {
         const Motion = require('./motion')
         Motion.installSmoothLook(bot)
         Motion.installHumanDig(bot)
+        try { require('./autotool').install(this) } catch (e) { this.log('warn', 'autotool yüklenemedi: ' + e.message) }
         Motion.tuneMovements(this.movements, this.mcData)
         this.timers.push(Motion.startIdleGlance(this))
       } catch (e) { this.log('warn', `motion.js yüklenemedi (kafa çevirme anlık olacak): ${e.message}`) }
@@ -547,7 +549,8 @@ class BotInstance {
       son_gorev_sonuclari: this.lastResults.slice(-4), son_soylediklerin: this.recentSaid.slice(-5),
       ogrendiklerin: this.relevantNotes(message),
       kayitli_makrolar: Object.entries(this.macros || {}).map(([k, v]) => (v.desc ? `${k} (${v.desc})` : k)).slice(0, 15),
-      yuklu_sematikler: /sema|schem|litem|yap[ıi]|kur|ev\b/i.test(message) ? require('./schematic').listFiles().map((f) => f.name).slice(0, 10) : undefined,
+      sunucu: /komut|command|plugin|eklenti|worldedit|\btpa?\b|home|\bkit\b|warp|spawn|(^|\s)\/\w+/i.test(message) && this.cmdSummary ? this.cmdSummary() : undefined,
+      yuklu_sematikler: /sema|schem|litem|yap|kur|in[sş]a|build|pist|kule|kale|havuz|ev\b/i.test(message) ? require('./schematic').listFiles().map((f) => f.name).slice(0, 10) : undefined,
     }
   }
 

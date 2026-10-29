@@ -446,6 +446,8 @@ async function goto_player(inst, a, { cancelled } = {}) {
   let ref = bot.entity.position.clone()
   let refT = Date.now()
   let stuckN = 0
+  let curKey = null
+  let curGoal = null
   try {
     while (!cancel() && Date.now() - t0 < 120000) {
       e = playerEntity(inst, a.target)
@@ -458,8 +460,13 @@ async function goto_player(inst, a, { cancelled } = {}) {
         return ok(`${a.target} yanına vardım`)
       }
       // hedef hareket ediyorsa dinamik takip, görüş dışıysa sabit nokta
-      const goal = e ? new goals.GoalFollow(e, d) : new goals.GoalNear(last.x, last.y, last.z, d)
-      bot.pathfinder.setGoal(goal, !!e)
+      const gkey = e ? `f${e.id}` : `n${Math.round(last.x)},${Math.round(last.z)}`
+      if (gkey !== curKey) {
+        curKey = gkey
+        curGoal = e ? new goals.GoalFollow(e, d) : new goals.GoalNear(last.x, last.y, last.z, d)
+        bot.pathfinder.setGoal(curGoal, !!e)
+      }
+      const goal = curGoal
       await sleep(400)
       // takıldıysa kurtul
       if (me.distanceTo(ref) > 0.6 || bot.targetDigBlock) { ref = bot.entity.position.clone(); refT = Date.now(); stuckN = 0 }

@@ -303,7 +303,16 @@ async function digBlock(inst, block) {
     throw new Error(`${block.name} kırmak için uygun aletim yok`)
   }
   if (tool) await bot.equip(tool, 'hand')
-  await bot.dig(block)
+  try {
+    await bot.dig(block)
+  } catch (e) {
+    // insansı kırma "menzil dışı / görüş hattı yok" derse: bloğa görüş hattı olan, rahat menzilde bir noktaya geç ve bir kez daha dene
+    if (!/menzil|görüş hattı/.test(e.message)) throw e
+    await goTo(inst, new goals.GoalLookAtBlock(block.position, bot.world, { reach: 3.6 }), { retries: 1, timeoutMs: 15000 })
+    const fresh = bot.blockAt(block.position)
+    if (!fresh || fresh.type !== block.type) return   // bu arada yok olmuş
+    await bot.dig(fresh)
+  }
 }
 
 async function equipBestWeapon(inst) {
@@ -364,6 +373,8 @@ async function rawPlace(bot, ref, face, extra = {}) {
 
 // Blok yerleştirme: komşu bir referans blok bulur, menzile girer, koyar.
 // opts: { lookDir, refDir:[dx,dy,dz], half, clicks }
+const withTimeout = (p, ms) => Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error('zaman aşımı')), ms))])
+
 async function placeAt(inst, itemName, pos, opts = {}) {
   const bot = inst.bot
   const target = bot.blockAt(pos)
@@ -372,7 +383,11 @@ async function placeAt(inst, itemName, pos, opts = {}) {
   if (!item && isCreative(inst) && (await ensureItem(inst, itemName))) item = findInv(inst, itemName)
   if (!item) return 'noitem'
 
+  const eyeDist = (v) => bot.entity.position.offset(0, 1.62, 0).distanceTo(v)
+  const center = pos.offset(0.5, 0.5, 0.5)
   await moveNear(inst, pos)
+  if (eyeDist(center) > 5.0) { await moveNear(inst, pos) }   // bir kez daha yaklaşmayı dene
+  if (eyeDist(center) > 5.4) return 'far'                    // menzil dışı: boşuna bekleme, sonra yeniden denenecek
   const feet = bot.entity.position.floored()
   if (feet.equals(pos) || feet.offset(0, 1, 0).equals(pos)) {
     await goTo(inst, new goals.GoalInvert(new goals.GoalNear(pos.x, pos.y, pos.z, 2)))
@@ -383,6 +398,7 @@ async function placeAt(inst, itemName, pos, opts = {}) {
   for (const f of faces) {
     const ref = bot.blockAt(pos.offset(f[0], f[1], f[2]))
     if (!ref || isAir(ref) || isLiquid(ref) || ref.boundingBox !== 'block') continue
+    if (eyeDist(ref.position.offset(0.5, 0.5, 0.5)) > 5.6) continue   // bu yüze uzanamıyorum
     let sneaking = false
     try {
       await bot.equip(item, 'hand')
@@ -391,9 +407,9 @@ async function placeAt(inst, itemName, pos, opts = {}) {
       if (opts.lookDir && DIR_VEC[opts.lookDir]) {
         const v = DIR_VEC[opts.lookDir]
         await bot.lookAt(bot.entity.position.offset(0, 1.62, 0).plus(new Vec3(v[0], v[1], v[2]).scaled(5)), true)
-        await rawPlace(bot, ref, face, { forceLook: 'ignore', half: opts.half })
+        await withTimeout(rawPlace(bot, ref, face, { forceLook: 'ignore', half: opts.half }), 1800)
       } else {
-        await rawPlace(bot, ref, face, { half: opts.half })
+        await withTimeout(rawPlace(bot, ref, face, { half: opts.half }), 1800)
       }
       if (opts.clicks) {
         const placed = bot.blockAt(pos)
@@ -748,6 +764,8 @@ async function collect(inst, a, ctx) {
   let mined = 0
   let fails = 0
   let lastErr = ''
+  let hops = 0
+  let exploreAng = Math.random() * Math.PI * 2
   while (!cancelled() && mined < a.count && fails < 5) {
     const here = inst.bot.entity.position
     const cands = inst.bot.findBlocks({ matching: ids, maxDistance: 64, count: 24 })
@@ -759,7 +777,19 @@ async function collect(inst, a, ctx) {
         const r = await mine(inst, { ...a, count: a.count - mined }, ctx)
         return r.ok ? ok(`${mined + (r.mined || 0)} adet ${a.label} topladım`) : fail(r.msg)
       }
-      return mined > 0 ? ok(`${mined} adet ${a.label} kırdım, çevrede başka kalmadı`) : fail(`64 blok çevrede ${a.label} bulamadım`)
+      // Ağaç/kum/toprak gibi yüzey blokları: yakında yoksa keşfe çıkıp ara (en çok 5 sıçrama ≈ 200 blok)
+      if (!isOre && a.explore !== false && hops < 5 && !cancelled()) {
+        hops++
+        const cur = inst.bot.entity.position
+        const ang = exploreAng + (hops - 1) * 0.35
+        const tx = Math.floor(cur.x + Math.sin(ang) * 40)
+        const tz = Math.floor(cur.z - Math.cos(ang) * 40)
+        inst.log('action', `${a.label} yakında yok: keşfe çıkıyorum (${hops}/5)`)
+        const moved = await goTo(inst, new goals.GoalNearXZ(tx, tz, 5), { cancelled, retries: 1, timeoutMs: 40000 })
+        if (!moved) exploreAng += 1.2   // engel: yönü değiştir
+        continue
+      }
+      return mined > 0 ? ok(`${mined} adet ${a.label} kırdım, çevrede başka kalmadı`) : fail(`çevrede ${a.label} bulamadım${hops ? ` (${hops * 40} blok keşfettim)` : ''}`)
     }
     try {
       const reached = await goTo(inst, new goals.GoalLookAtBlock(pos, inst.bot.world), { cancelled, retries: 2, timeoutMs: 45000 })
@@ -1179,7 +1209,11 @@ const TEMP_BLOCKS = ['dirt', 'cobblestone', 'netherrack', 'stone', 'cobbled_deep
 const INTERACTABLE = /(door|trapdoor|fence_gate|button|lever|chest|barrel|furnace|smoker|crafting_table|anvil|_bed$|shulker_box|note_block|dispenser|dropper|hopper|repeater|comparator|enchanting_table|brewing_stand|loom|stonecutter|lectern|cartography_table|smithing_table|grindstone|beacon|bell|cauldron|jukebox|daylight_detector|cake|command_block|_sign$)/
 const ITEM_TO_BLOCK = { redstone: 'redstone_wire', wheat_seeds: 'wheat', carrot: 'carrots', potato: 'potatoes', beetroot_seeds: 'beetroots', string: 'tripwire' }
 
-const isCreative = (inst) => !!(inst.bot.game && inst.bot.game.gameMode === 'creative')
+const isCreative = (inst) => {
+  const b = inst.bot
+  // game_state_change kaçsa bile oyuncu bilgisinden (gamemode 1 = creative) anla
+  return !!((b.game && b.game.gameMode === 'creative') || (b.player && b.player.gamemode === 1))
+}
 
 async function ensureItem(inst, name, count = 64) {
   const bot = inst.bot
@@ -1419,7 +1453,7 @@ async function placeMany(inst, targets, opts = {}) {
     const missing = Object.entries(need).filter(([n, k]) => invCount(inst, n) < k).map(([n, k]) => `${n} (${invCount(inst, n)}/${k})`)
     if (todo.some((t) => t.kind === 'farmland') && !bot.inventory.items().some((i) => i.name.endsWith('_hoe'))) missing.push('çapa (hoe)')
     if (missing.length && !opts.partial) {
-      stats.blocked = `malzeme eksik, başlamadım -> ${missing.slice(0, 10).join(', ')}. Eksik olanla devam etmemi istersen "partial" de`
+      stats.blocked = `malzeme eksik, başlamadım -> ${missing.slice(0, 10).join(', ')}. Oyun modum creative değil (${(bot.game && bot.game.gameMode) || '?'}) ve OP komutu kullanamıyorum; creative/OP ver ya da malzemeyi envanterime koy. Eksik olanla devam etmemi istersen "partial" de`
       return stats
     }
   }
@@ -1438,6 +1472,7 @@ async function placeMany(inst, targets, opts = {}) {
   }
 
   let n = 0
+  const retry = []
   for (const st of plan.steps) {
     if (cancelled()) { stats.cancelled = true; break }
     if (st.kind === 'scaffold') {
@@ -1452,10 +1487,29 @@ async function placeMany(inst, targets, opts = {}) {
     remainingNeed[t.item] = Math.max(0, (remainingNeed[t.item] || 0) - (t.kind === 'double' ? 2 : 1))
     if (r === 'ok') stats.placed++
     else if (r === 'noitem') stats.noitem++
-    else if (r !== 'full') stats.failed++
+    else if (r !== 'full') retry.push(t)   // menzil/yaslanma sorunu: sonra tekrar denenecek
     n++
     if (n % 40 === 0) inst.log('action', `${opts.label || 'inşa'}: ${n}/${todo.length}`)
   }
+
+  // Yeniden deneme: kalanlar bota en yakından başlayarak (komşu bloklar artık yerinde olabilir), en çok 2 geçiş
+  let pending = retry
+  for (let pass = 0; pass < 2 && pending.length && !(cancelled() || stats.cancelled); pass++) {
+    inst.log('action', `${opts.label || 'inşa'}: ${pending.length} blok için ${pass + 1}. tekrar deneme`)
+    const next = []
+    pending.sort((a, b) => bot.entity.position.distanceTo(a.pos) - bot.entity.position.distanceTo(b.pos))
+    for (const t of pending) {
+      if (cancelled()) { stats.cancelled = true; break }
+      const cur = bot.blockAt(t.pos)
+      if (cur && cur.name === t.blockName) { stats.placed++; continue }
+      const r = await placeOne(inst, t, creative)
+      if (r === 'ok') stats.placed++
+      else if (r === 'noitem') stats.noitem++
+      else if (r !== 'full') next.push(t)
+    }
+    pending = next
+  }
+  stats.failed += pending.length
 
   // iskeleyi yukarıdan aşağı kır
   const placedScaf = new Set(scaffolded.map((p) => `${p.x},${p.y},${p.z}`))

@@ -17,6 +17,10 @@ try { Intent = require('./intent') } catch (e) { /* intent.js yoksa her komut ya
 const DATA_DIR = path.join(__dirname, '..', 'data')
 const ARMOR_RANK = ['leather', 'golden', 'chainmail', 'iron', 'diamond', 'netherite']
 const ARMOR_SLOTS = { head: 'helmet', torso: 'chestplate', legs: 'leggings', feet: 'boots' }
+// Bu eylemleri içeren planlar OP ise otomatik creative'e geçirir
+const CREATIVE_TYPES = new Set(['house', 'build', 'build_shape', 'fill', 'schematic', 'shelter', 'redstone', 'make_farm', 'nether_portal', 'bridge', 'pillar_up', 'light_area', 'plant', 'bone_meal', 'farm'])
+// Bunlar bağlantı kopunca devam ettirilmez (yan etkili / anlık)
+const NO_RESUME = new Set(['command', 'chat', 'duel', 'crystal_pvp', 'attack', 'flee', 'stop', 'drop', 'give', 'throw_item', 'web_search', 'fly', 'sleep', 'wake', 'write_sign'])
 const SILENT_TYPES = new Set(['stop', 'follow', 'guard', 'eat', 'equip', 'wait', 'jump', 'sneak', 'look_at', 'set_home', 'chat', 'command', 'drink', 'door', 'write_sign'])
 const MAX_REPLAN = 2
 const MAX_LOGS = 600
@@ -132,6 +136,7 @@ class BotInstance {
   // ------------------------------------------------------------ yaşam döngüsü
   start() {
     clearTimeout(this.reconnectTimer)
+    this.banned = false
     this.manualStop = false
     this.ready = false
     this.setStatus('connecting')
@@ -140,6 +145,7 @@ class BotInstance {
     const opts = {
       host: c.host, port: c.port, username: c.name, auth: c.auth,
       version: c.version === 'auto' ? false : c.version,
+      checkTimeoutInterval: 90 * 1000,   // yavaş CPU/ağda yanlış 'timed out' kopmalarını önle (varsayılan 30 sn)
     }
     if (c.auth === 'microsoft') {
       opts.profilesFolder = path.join(DATA_DIR, 'auth', safeName(c.name))
@@ -229,8 +235,11 @@ class BotInstance {
 
   scheduleReconnect() {
     if (this.manualStop || !this.cfg.autoReconnect) return
+    if (this.banned) { this.banned = false; this.setStatus('error'); return }
     this.retry++
-    const wait = Math.min(60, 5 * this.retry)
+    let wait = Math.min(60, 5 * this.retry)
+    if (this.kickWait) { wait = Math.max(wait, this.kickWait); this.kickWait = 0 }
+    wait += Math.floor(Math.random() * 6)   // aynı anda bağlanma dalgasını dağıt
     this.log('warn', `${wait} sn sonra yeniden bağlanılacak (deneme ${this.retry})...`)
     this.reconnectTimer = setTimeout(() => this.start(), wait * 1000)
   }
@@ -269,6 +278,7 @@ class BotInstance {
       this.loadHomes()
       this.loadKnowledge()
       this.loadMacros()
+      setTimeout(() => { if (this.ready) this.resumeTask().catch((e) => this.log('warn', `Devam hatası: ${e.message}`)) }, 6000)
       try { this.mem = new (require('./memory').PlanMemory)(this.memoryFile()) } catch (e) { this.mem = null; this.log('warn', 'memory.js yüklenemedi: ' + e.message) }
       this.mode = 'idle'
       this.setStatus('online')
@@ -294,6 +304,15 @@ class BotInstance {
           }
         } catch (e) { /* önemsiz */ }
       }, 1000))
+      {
+        let last = Date.now()
+        this.timers.push(setInterval(() => {
+          const now = Date.now()
+          const drift = now - last - 1000
+          last = now
+          if (drift > 2500) this.log('warn', `Sunucu ${Math.round(drift / 1000)} sn takıldı (CPU/bellek yetersiz olabilir): bağlantı kopması riski. Ağır işlem (büyük yapı/arama) ya da Render ücretsiz plan sınırı olabilir.`)
+        }, 1000))
+      }
       try { require('./reflex').install(this) } catch (e) { this.log('warn', 'reflex yüklenemedi: ' + e.message) }
       this.timers.push(setInterval(() => this.emit('state', { state: this.getState() }), 1500))
     })
@@ -329,7 +348,17 @@ class BotInstance {
       this.log('warn', 'Öldü.')
     })
     bot.on('respawn', () => this.log('info', 'Yeniden doğdu.'))
-    bot.on('kicked', (r) => this.log('error', `Sunucudan atıldı: ${typeof r === 'string' ? r : JSON.stringify(r)}`))
+    bot.on('kicked', (r) => {
+      const text = typeof r === 'string' ? r : JSON.stringify(r)
+      this.log('error', `Sunucudan atıldı: ${text}`)
+      const t = text.toLowerCase()
+      this.lastKick = t
+      if (/banned|ban\b|yasaklan/.test(t)) { this.log('error', 'BAN algılandı: otomatik yeniden bağlanma durduruldu (tekrar denemek durumu kötüleştirir).'); this.banned = true }
+      else if (/throttl|too fast|connecting too|rate.?limit|çok hızlı/.test(t)) this.kickWait = 90
+      else if (/already|duplicate|zaten|same name/.test(t)) this.kickWait = 45
+      else if (/spam|flood/.test(t)) this.kickWait = 60
+      else if (/whitelist|beyaz liste/.test(t)) { this.log('error', 'Beyaz listede değilsin: yeniden bağlanma durduruldu.'); this.banned = true }
+    })
     bot.on('error', (e) => this.log('error', `Hata: ${e.message}`))
     bot.on('end', (reason) => {
       this.ready = false
@@ -360,6 +389,12 @@ class BotInstance {
   physicsTick() {
     if (!this.ready || !this.movements) return
     const bot = this.bot
+    // Açlık 6 ve altındayken sprint yapılamaz (vanilla kuralı); yapılırsa Grim gibi anti-cheat'ler "Simulation" ile atar
+    if (typeof bot.food === 'number') {
+      const canSprint = bot.food > 6
+      if (!canSprint && bot.getControlState && bot.getControlState('sprint')) bot.setControlState('sprint', false)
+      if (this.movements.allowSprinting !== canSprint) this.movements.allowSprinting = canSprint
+    }
     if (this.cfg.autoDefend && bot.health <= 6 && this.nearestHostile(6)) {
       if (this.mode !== 'flee') {
         this.mode = 'flee'
@@ -623,6 +658,7 @@ class BotInstance {
           this.lastQuery = message
           this.lastUserQuery = message
           this.log('ai', `(yerel komut, yapay zeka kullanılmadı) ${JSON.stringify(v.out.map(simplify))}`)
+          this.pendingRaw = { raw, text: String(message).slice(0, 80) }
           this.runPlan(v.out, senderPlayer, true).catch((e) => this.log('error', `Plan hatası: ${e.message}`))
           return
         }
@@ -645,6 +681,7 @@ class BotInstance {
             this.lastUserQuery = message
             this.lastLearnKey = message
             this.log('ai', `(öğrenilmiş plan, ${hit.wins} başarı, yapay zeka kullanılmadı) ${JSON.stringify(v.out.map(simplify))}`)
+            this.pendingRaw = { raw: hit.actions, text: String(message).slice(0, 80) }
             this.runPlan(v.out, senderPlayer, true, { key: message, actions: hit.actions, cached: true }).catch((e) => this.log('error', `Plan hatası: ${e.message}`))
             return
           }
@@ -693,6 +730,18 @@ class BotInstance {
       } catch (e) { /* normal akışa düş */ }
       this.history.push({ role: 'user', content: `[${label}] ${message}` })
     }
+    if (label !== 'Sistem') this.customTries = this.customTries && this.customReset === message ? this.customTries : 0
+    this.customReset = message
+    // Hazır eylemler yetmediyse: modelden KENDİ custom JSON'unu üretmesini iste (bir kez)
+    const CANT = /yapam[ıi]yorum|yapamam|desteklenm|listede yok|eylem(im)? yok|elimde (bir )?eylem|can'?t do|cannot|unable|ger[cç]ekle[sş]tiremiyorum/i
+    const dropUnknown = plan.dropped && plan.dropped.some((d) => /bilinmeyen eylem tipi/.test(d))
+    if (trusted && label !== 'Sistem' && (dropUnknown || (!plan.actions.length && CANT.test(plan.say || ''))) && (this.customTries || 0) < 1 && this.lastUserQuery) {
+      this.customTries = (this.customTries || 0) + 1
+      this.history.pop()
+      this.log('info', 'Hazır eylem yetmedi: model kendi custom planını üretecek...')
+      this.queueMessage('Sistem', senderPlayer, `Oyuncunun isteği: "${this.lastUserQuery}". Listedeki hazır eylemlerle doğrudan yapılamıyor ("listede yok"). Kendi planını TEK bir custom eylemiyle yaz: {"type":"custom","name":"kisa_ad","desc":"ne yapar","steps":[...]}. Adımlar (op): equip, use, use_on, look, control, wait, say, repeat{times,steps}, if{...} ve action{action:{hazır eylem}} (hazır eylemleri içine alabilirsin: örn. goto, collect, place). Gerçekten mümkün değilse actions boş bırak ve nedenini dürüstçe söyle; uydurma.`, true)
+      return
+    }
     this.log('ai', `(${Date.now() - t0} ms) ${JSON.stringify({ say: plan.say, actions: plan.actions.map(simplify) })}`)
 
     this.history.push({ role: 'assistant', content: JSON.stringify({ say: plan.say || '', actions: plan.actions.map(simplify) }) })
@@ -705,6 +754,7 @@ class BotInstance {
     let learn = null
     if (trusted && label !== 'Sistem' && this.mem && !(plan.dropped && plan.dropped.length) && this.mem.eligible(message, plan.raw)) learn = { key: message, actions: plan.raw }
     if (learn) this.lastLearnKey = message
+    if (trusted && label !== 'Sistem' && plan.raw && !(plan.dropped && plan.dropped.length)) this.pendingRaw = { raw: plan.raw, text: String(message).slice(0, 80) }
     if (plan.actions.length) this.runPlan(plan.actions, senderPlayer, true, learn).catch((e) => this.log('error', `Plan hatası: ${e.message}`))
   }
 
@@ -717,14 +767,77 @@ class BotInstance {
     this.mode = 'idle'
   }
 
+  // Malzeme/çiftlik isteyen işlerde (OP ise) otomatik creative; iş bitince eski moda dön
+  async maybeCreative(actions) {
+    if (process.env.AUTOCREATIVE === '0' || this.cfg.autoCreative === false) return
+    if (!actions.some((a) => CREATIVE_TYPES.has(a.type))) return
+    const g = this.bot.game && this.bot.game.gameMode
+    if (g === 'creative') return
+    try {
+      const ok = await require('./opbuild').setGamemode(this, 'creative')
+      if (ok) { this.creativeRestoreTo = g || 'survival'; this.log('info', `Malzeme gerektiren iş: creative moda geçtim (iş bitince ${this.creativeRestoreTo} moduna dönülecek).`) }
+    } catch (e) { /* OP yok: normal devam */ }
+  }
+
+  async restoreMode() {
+    const to = this.creativeRestoreTo
+    if (!to || this.mode === 'busy' || process.env.AUTOCREATIVE_KEEP === '1' || this.cfg.autoCreativeKeep === true) return
+    this.creativeRestoreTo = null
+    try { await require('./opbuild').setGamemode(this, to); this.log('info', `Oyun modu ${to} olarak geri alındı.`) } catch (e) { /* önemsiz */ }
+  }
+
+  // ---- iş kaydı: bağlantı kopsa da yarım iş sürsün
+  taskFile() { return path.join(DATA_DIR, `task-${safeName(this.cfg.name)}.json`) }
+  saveTask(t) { try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(this.taskFile(), JSON.stringify(t)) } catch (e) { /* önemsiz */ } }
+  clearTask() { this.task = null; try { fs.unlinkSync(this.taskFile()) } catch (e) { /* yok */ } }
+  loadTask() { try { return JSON.parse(fs.readFileSync(this.taskFile(), 'utf8')) } catch (e) { return null } }
+
+  async resumeTask() {
+    if (process.env.RESUME === '0' || this.cfg.resume === false) return
+    const t = this.loadTask()
+    if (!t || !Array.isArray(t.raw) || !t.raw.length) return
+    if (Date.now() - t.t > 30 * 60 * 1000) { this.clearTask(); return }          // 30 dk'dan eski iş devam ettirilmez
+    if ((t.tries || 0) >= 3) { this.log('warn', 'Yarım iş 3 kez denendi, vazgeçildi.'); this.clearTask(); return }
+    const rest = t.raw.slice(t.done || 0)
+    if (!rest.length) { this.clearTask(); return }
+    const v = validateActions(this, rest, { senderPlayer: t.sender, trusted: true })
+    if (!v.out.length || v.errors.length) { this.log('warn', `Yarım iş devam ettirilemedi (${v.errors.join(' | ') || 'boş'}).`); this.clearTask(); return }
+    t.tries = (t.tries || 0) + 1
+    this.saveTask(t)
+    this.log('info', `Yarım kalan işe devam ediliyor (deneme ${t.tries}): ${JSON.stringify(v.out.map(simplify))}`)
+    this.say(`Bağlantı kopmuştu, yarım kalan işe devam ediyorum: ${t.text || ''}`.slice(0, 120))
+    this.pendingTask = { raw: t.raw, sender: t.sender, text: t.text, offset: t.done || 0, tries: t.tries }
+    this.runPlan(v.out, t.sender, true).catch((e) => this.log('error', `Plan hatası: ${e.message}`))
+  }
+
   async runPlan(actions, sender, narrateResult = true, learn = null) {
+    const pid = this.planId
+    await this.maybeCreative(actions)
+    if (this.planId !== pid) return   // bu sırada yeni komut ya da "dur" geldi
+    try { return await this._runPlan(actions, sender, narrateResult, learn) } finally { this.restoreMode().catch(() => {}) }
+  }
+
+  async _runPlan(actions, sender, narrateResult = true, learn = null) {
     const id = ++this.planId
     this.stopEverything()
     this.mode = 'busy'
     const cancelled = () => id !== this.planId
     const results = []
+    // Bu planı diske yaz (yalnızca ham eylemlerle bire bir eşleşiyorsa); bağlantı kopsa da devam edilebilsin
+    let task = null
+    if (this.pendingTask && this.pendingTask.raw.length - this.pendingTask.offset === actions.length) {
+      task = { ...this.pendingTask, done: this.pendingTask.offset }
+    } else if (this.pendingRaw && this.pendingRaw.raw.length === actions.length) {
+      task = { raw: this.pendingRaw.raw, sender, text: this.pendingRaw.text, offset: 0, done: 0, tries: 0 }
+    }
+    this.pendingTask = null
+    this.pendingRaw = null
+    if (task && !actions.some((a) => NO_RESUME.has(a.type))) this.saveTask({ raw: task.raw, sender: task.sender || sender, text: task.text, done: task.done, tries: task.tries || 0, t: Date.now() })
+    else task = null
+    this.task = task
 
-    for (const a of actions) {
+    for (let i = 0; i < actions.length; i++) {
+      const a = actions[i]
       if (cancelled()) return
       this.activity = JSON.stringify(simplify(a))
       this.log('action', `▶ ${this.activity}`)
@@ -735,12 +848,22 @@ class BotInstance {
         r = { ok: false, msg: `beklenmeyen hata: ${e.message}` }
       }
       if (cancelled()) return
+      if (!this.ready) return   // bağlantı koptu: işi diskte tut, burada bitirme/yeniden planlama yapma
       this.log(r.ok ? 'action' : 'warn', `${r.ok ? '✔' : '✖'} ${a.type}: ${r.msg}`)
       results.push({ type: a.type, ok: r.ok, msg: r.msg, data: r.data })
+      if (r.ok && task) { task.done = task.offset + i + 1; this.saveTask({ raw: task.raw, sender: task.sender || sender, text: task.text, done: task.done, tries: task.tries || 0, t: Date.now() }) }
       if (!r.ok) break
     }
 
     if (cancelled()) return
+    if (!this.ready) return
+    // Plan bitti (başarılı ya da kalıcı hata): artık devam ettirilecek yarım iş yok.
+    // Hata bağlantı kopmasından geliyor olabilir: kısa bekle, hâlâ bağlıysak gerçek hatadır.
+    if (task && results.some((r) => !r.ok)) {
+      await new Promise((r) => setTimeout(r, 1200))
+      if (!this.ready || cancelled()) return
+    }
+    this.clearTask()
     if (this.mode === 'busy') this.mode = 'idle'
     this.activity = this.mode === 'follow' ? 'oyuncuyu takip ediyor' : this.mode === 'guard' ? 'nöbette' : 'boşta'
     if (learn && this.mem) {

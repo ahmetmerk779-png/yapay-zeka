@@ -14,7 +14,8 @@ const { execute, equipBestWeapon, EXEC } = require('./actions')
 let Intent = null
 try { Intent = require('./intent') } catch (e) { /* intent.js yoksa her komut yapay zekaya gider */ }
 
-const DATA_DIR = path.join(__dirname, '..', 'data')
+// Render'da kalıcı disk bağlarsan (örn. /var/data) DATA_DIR=/var/data yap: öğrenilen planlar, makrolar, notlar ve yarım işler deploy'da silinmez
+const DATA_DIR = process.env.DATA_DIR ? path.resolve(process.env.DATA_DIR) : path.join(__dirname, '..', 'data')
 const ARMOR_RANK = ['leather', 'golden', 'chainmail', 'iron', 'diamond', 'netherite']
 const ARMOR_SLOTS = { head: 'helmet', torso: 'chestplate', legs: 'leggings', feet: 'boots' }
 // Bu eylemleri içeren planlar OP ise otomatik creative'e geçirir
@@ -663,6 +664,20 @@ class BotInstance {
           return
         }
         this.log('info', `Yerel komut doğrulanamadı (${v.errors.join(' | ') || 'boş'}), yapay zekaya soruluyor`)
+      }
+    }
+    if (trusted && label !== 'Sistem') {
+      const t0 = String(message).toLowerCase().replace(new RegExp(this.bot.username.toLowerCase(), 'g'), '').replace(/[?!.,]/g, ' ').replace(/\s+/g, ' ').trim()
+      if (/^(ne yapabilirsin|neler yapabilirsin|yard[ıi]m|komutlar|help|what can you do|ne i[sş]e yar[ıi]yorsun)$/.test(t0)) {
+        const lines = [
+          'Hareket: yanıma gel, takip et, uç (elytra+roket), keşfet, eve dön, dur.',
+          'Toplama/maden: odun topla, taş kaz, demir damarını kaz, sandıkları yağmala, envanteri boşalt.',
+          'İnşa: ev yap, şematik kur (ice-track kur), köprü, kule; OP/creative ise çok hızlı.',
+          'Savaş: beni koru, benimle pvp at (sword/mace/uhc/crystal...), nöbet tut.',
+          'Diğer: durum, çiftleştir, köylüyle takas, craft/pişir, "X yap" dersen bilmediğimi kendi planımla denerim.',
+        ]
+        lines.forEach((l, i) => setTimeout(() => this.say(l), i * 700))
+        return
       }
     }
     // Öz-öğrenme: komutlar + hatırlanan planlar

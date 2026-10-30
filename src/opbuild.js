@@ -132,4 +132,22 @@ async function clearPositions(inst, positions, cancelled) {
   return cells.filter((c) => { const b = bot.blockAt(new Vec3(c.x, c.y, c.z)); return b && b.name === 'air' }).length
 }
 
-module.exports = { available, placeTargets, clearPositions, boxes, cmdOk }
+// Kendi oyun modunu değiştir (OP gerekir). Başarılıysa true.
+async function setGamemode(inst, mode) {
+  if (!enabled(inst)) return false
+  const bot = inst.bot
+  const cur = () => (bot.game && bot.game.gameMode) || ''
+  if (cur() === mode) return true
+  const has = (n) => (inst.hasCmd ? inst.hasCmd(n) : false)
+  let allowed = false
+  if (inst.serverCmds && inst.serverCmds.size) allowed = has('gamemode') || has('gm')
+  else allowed = await available(inst)
+  if (!allowed) return false
+  bot.chat(`/gamemode ${mode}`)
+  const t0 = Date.now()
+  while (cur() !== mode && Date.now() - t0 < 4000) await sleep(150)
+  if (cur() !== mode && has('gm')) { bot.chat(`/gm ${mode}`); const t1 = Date.now(); while (cur() !== mode && Date.now() - t1 < 3000) await sleep(150) }
+  return cur() === mode
+}
+
+module.exports = { available, setGamemode, placeTargets, clearPositions, boxes, cmdOk }

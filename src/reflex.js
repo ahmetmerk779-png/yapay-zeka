@@ -86,6 +86,17 @@ function install(inst) {
     try { await collectDrops(5000, 7, () => inst.planId !== pid) } finally { if (inst.planId === pid && inst.mode === 'busy') { bot.pathfinder.setGoal(null); inst.mode = 'idle'; inst.activity = 'boşta' } }
   }), 5000))
 
+  // Envanter dolmak üzereyse bir kez haber ver (toplama işleri sessizce takılmasın)
+  let fullWarned = 0
+  inst.timers.push(setInterval(safe(async () => {
+    if (!inst.ready) return
+    const empty = typeof bot.inventory.emptySlotCount === 'function' ? bot.inventory.emptySlotCount() : 99
+    if (empty <= 1 && Date.now() - fullWarned > 5 * 60 * 1000) {
+      fullWarned = Date.now()
+      inst.narrate && inst.narrate('Envanterim dolmak üzere. "envanteri boşalt" dersen yakındaki sandığa koyarım, ya da "çöpleri at" diyebilirsin.', 'info')
+    }
+  }), 10000))
+
   // Lavda / suda boğulurken yüzeye ve karaya çık
   inst.timers.push(setInterval(safe(async () => {
     if (!inst.ready || !bot.entity) return

@@ -227,11 +227,13 @@ function relaxGoal(goal, step) {
 async function goTo(inst, goal0, opts = {}) {
   const bot = inst.bot
   const maxRetries = opts.retries === undefined ? 4 : opts.retries
-  const saved = inst.movements ? { parkour: inst.movements.allowParkour, sprint: inst.movements.allowSprinting } : null
+  const saved = inst.movements ? { parkour: inst.movements.allowParkour, sprint: inst.movements.allowSprinting, placeCost: inst.movements.placeCost, towers: inst.movements.allow1by1towers } : null
   let goal = goal0
   let relaxed = 0
   try {
     for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      // Normal yol bulunamadıysa son denemelerde köprü/kule kurmaya izin ver
+      if (attempt >= 2 && inst.movements) { inst.movements.placeCost = 4; inst.movements.allow1by1towers = true }
       let finished = false
       let result = false
       let abortedStuck = false
@@ -268,7 +270,7 @@ async function goTo(inst, goal0, opts = {}) {
     }
     return false
   } finally {
-    if (saved && inst.movements) { inst.movements.allowParkour = saved.parkour; inst.movements.allowSprinting = saved.sprint }
+    if (saved && inst.movements) { inst.movements.allowParkour = saved.parkour; inst.movements.allowSprinting = saved.sprint; inst.movements.placeCost = saved.placeCost; inst.movements.allow1by1towers = saved.towers }
   }
 }
 
@@ -344,6 +346,8 @@ function hintsFor(name, props = {}) {
     else if (FACES_PLAYER.test(name)) h.lookDir = OPPOSITE[f]
     if (WALL_MOUNT.test(name) && (props.face === undefined || props.face === 'wall')) h.refDir = DIR_VEC[OPPOSITE[f]]
   }
+  if (props.axis && /(_log|_wood|_stem|_hyphae|_pillar|chain$|basalt$|bone_block|hay_block|^purpur_pillar|_pillar$)/.test(name)) h.axis = props.axis
+  if (f && /hopper$/.test(name) && f !== 'down' && DIR_VEC[f]) h.refDir = DIR_VEC[f]
   if (props.face === 'floor') h.refDir = DIR_VEC.down
   else if (props.face === 'ceiling') h.refDir = DIR_VEC.up
   if (props.half === 'top' || props.type === 'top') h.half = 'top'
@@ -383,6 +387,7 @@ async function placeAt(inst, itemName, pos, opts = {}) {
   if (!item && isCreative(inst) && (await ensureItem(inst, itemName))) item = findInv(inst, itemName)
   if (!item) return 'noitem'
 
+  bot.setControlState('sprint', false)   // blok koyarken koşulmaz
   const eyeDist = (v) => bot.entity.position.offset(0, 1.62, 0).distanceTo(v)
   const center = pos.offset(0.5, 0.5, 0.5)
   // Yaslanacak katı komşu yoksa (suyun/havanın ortası) boşuna ileri geri gitme
@@ -400,6 +405,10 @@ async function placeAt(inst, itemName, pos, opts = {}) {
   }
 
   const faces = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]]
+  if (opts.axis) {
+    const ax = { x: 0, y: 1, z: 2 }[opts.axis]
+    if (ax !== undefined) faces.sort((p, q) => (p[ax] !== 0 ? 0 : 1) - (q[ax] !== 0 ? 0 : 1))   // gövdenin ekseni, tıklanan yüze göre belirlenir
+  }
   if (opts.refDir) faces.unshift(opts.refDir)
   for (const f of faces) {
     const ref = bot.blockAt(pos.offset(f[0], f[1], f[2]))
@@ -1408,6 +1417,20 @@ async function opCmdOne(inst, t, cancelled) {
   } catch (e) { return false }
 }
 
+// Konan bloğun yönü/yarısı/ekseni şematikteki ile uyuşuyor mu?
+function stateMismatch(bot, t) {
+  if (!t.props) return false
+  const b = bot.blockAt(t.pos)
+  if (!b || b.name !== t.blockName) return false
+  let cur
+  try { cur = b.getProperties() } catch (e) { return false }
+  const diff = (k) => t.props[k] !== undefined && cur[k] !== undefined && String(t.props[k]) !== String(cur[k])
+  for (const k of ['facing', 'axis', 'face', 'delay', 'mode']) if (diff(k)) return true
+  if (/(_stairs|_trapdoor)$/.test(t.blockName) && diff('half')) return true
+  if (/_slab$/.test(t.blockName) && diff('type')) return true
+  return false
+}
+
 async function placeMany(inst, targets, opts = {}) {
   const bot = inst.bot
   const cancelled = opts.cancelled || (() => false)
@@ -1529,6 +1552,30 @@ async function placeMany(inst, targets, opts = {}) {
   }
   stats.failed += pending.length
 
+  // Yön/eksen/yarı kontrolü: yanlış duranları düzelt (önce OP komutu, olmazsa kırıp yeniden koy)
+  if (!cancelled() && !stats.cancelled && opts.verifyState !== false) {
+    let wrong = targets.filter((t) => stateMismatch(bot, t)).slice(0, 400)
+    stats.wrongState = wrong.length
+    if (wrong.length) {
+      inst.log('action', `${opts.label || 'inşa'}: ${wrong.length} blok yanlış yönde, düzeltiyorum`)
+      try { await OpBuild.placeTargets(inst, wrong, cancelled, { min: 1 }) } catch (e) { /* elle dene */ }
+      wrong = wrong.filter((t) => stateMismatch(bot, t))
+      const NO_REDO = /(_door|_bed|chest|barrel|shulker_box|_slab)$/
+      for (const t of wrong.slice(0, 150)) {
+        if (cancelled()) { stats.cancelled = true; break }
+        if (NO_REDO.test(t.blockName) || (t.kind && t.kind !== 'normal')) continue
+        try {
+          const cur = bot.blockAt(t.pos)
+          await moveNear(inst, t.pos); await digBlock(inst, cur)
+          if (creative && !(await ensureItem(inst, t.item))) continue
+          await placeAt(inst, t.item, t.pos, t.hints || {})
+        } catch (e) { /* kalır */ }
+      }
+      stats.wrongState = targets.filter((t) => stateMismatch(bot, t)).length
+      stats.stateFixed = Math.max(0, Math.min(400, targets.length) - stats.wrongState)
+    }
+  }
+
   // iskeleyi yukarıdan aşağı kır
   const placedScaf = new Set(scaffolded.map((p) => `${p.x},${p.y},${p.z}`))
   for (const p of plan.cleanup) {
@@ -1550,6 +1597,7 @@ function summarizeBuild(s, label = 'blok') {
   if (s.failed) parts.push(`${s.failed} tanesi olmadı`)
   if (s.noitem) parts.push(`${s.noitem} tanesinde malzeme bitti`)
   if (s.unreachable) parts.push(`${s.unreachable} tanesine ulaşamadım (altında zemin yok)`)
+  if (s.wrongState) parts.push(`${s.wrongState} bloğun yönü/eksenini şematikle aynı yapamadım (kapı, yatak, sandık, slab gibi kırılmayanlar ya da yetki yok)`)
   if (s.cancelled) return fail(`iptal edildi: ${parts.join(', ')} (aynı komutu tekrar verirsen kaldığı yerden devam eder)`)
   const bad = s.failed + s.noitem + s.unreachable
   return bad <= Math.max(2, (s.total - s.already) * 0.15) ? ok(parts.join(', ')) : fail(`${parts.join(', ')}. Aynı komutu tekrar vererek kalanı tamamlatabilirsin`)
@@ -2612,6 +2660,54 @@ async function make_farm(inst, a, { cancelled }) {
     : fail(`ekim yapamadım (${tilled} blok çapalandı)${tail}`)
 }
 
+// ---- otomatik hasat döngüsü: hasat et, yeniden ek, envanter dolunca sandığa koy, ekinler büyüyünce tekrarla
+async function auto_farm(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const end = a.minutes ? Date.now() + a.minutes * 60000 : Infinity   // süre verilmediyse sınırsız: sen durdurana kadar
+  let cycles = 0
+  let harvested = 0
+  let stores = 0
+  let fails = 0
+  const nap = async (ms) => { const t0 = Date.now(); while (!cancelled() && Date.now() - t0 < ms && Date.now() < end) await sleep(1000) }
+  while (!cancelled() && Date.now() < end) {
+    inst.activity = 'otomatik hasat'
+    const r = await farm(inst, { radius: a.radius }, { cancelled })
+    if (cancelled()) break
+    if (r.ok) { cycles++; fails = 0; const m = /^(\d+) ekin/.exec(r.msg); if (m) harvested += Number(m[1]) } else fails++
+    if (fails >= 3 && cycles === 0) return fail(`olgun ekin bulamadım (${r.msg}). Önce tarla kurup ekim yapmak gerekir`)
+    const empty = typeof bot.inventory.emptySlotCount === 'function' ? bot.inventory.emptySlotCount() : 99
+    if (a.store && empty <= 4) { const sres = await store_all(inst, { radius: 24 }, { cancelled }); if (sres.ok) stores++ }
+    await nap(r.ok ? 20000 : 45000)
+  }
+  const msg = `otomatik hasat: ${cycles} tur, ${harvested} ekin${stores ? `, ${stores} kez sandığa koydum` : ''}`
+  return cancelled() ? ok(`durduruldu (${msg})`) : ok(`süre doldu (${msg})`)
+}
+
+// ---- AFK: yerinde dur, ara sıra bak/zıpla, acıkınca ye (sunucuda atılmamak için insan gibi küçük hareketler)
+async function afk(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const end = a.minutes ? Date.now() + a.minutes * 60000 : Infinity   // süre verilmediyse sınırsız: yeni komut gelene kadar
+  let eats = 0
+  let moves = 0
+  inst.activity = 'afk'
+  while (!cancelled() && Date.now() < end) {
+    const wait = 20000 + Math.random() * 35000
+    const t0 = Date.now()
+    while (!cancelled() && Date.now() - t0 < wait && Date.now() < end) await sleep(1000)
+    if (cancelled()) break
+    try { if (typeof bot.food === 'number' && bot.food <= 14 && (await inst.autoEat(true))) eats++ } catch (e) { /* */ }
+    const r = Math.random()
+    try {
+      if (r < 0.6) await Promise.race([bot.look(bot.entity.yaw + (Math.random() - 0.5) * 1.6, (Math.random() - 0.5) * 0.5, true), sleep(1500)])
+      else if (r < 0.8) { bot.setControlState('jump', true); await sleep(120); bot.setControlState('jump', false) }
+      else bot.swingArm('right')
+      moves++
+    } catch (e) { /* */ }
+  }
+  const msg = `${moves} küçük hareket${eats ? `, ${eats} kez yemek yedim` : ''}`
+  return cancelled() ? ok(`afk bitti (${msg})`) : ok(`afk süresi doldu (${msg})`)
+}
+
 // ---- parametrik ev
 function houseEntries(a, mcData, inst) {
   const [W, D, H] = { small: [5, 5, 3], medium: [7, 7, 4], large: [9, 9, 4] }[a.size]
@@ -3663,7 +3759,7 @@ const EXEC = {
   attack, guard, shoot, place, break: break_, fill, shelter, equip, drop, give, craft, smelt, eat,
   use_item, store, take, inspect_chest, trade, activate_block, find, chat, command, wait,
   door, enchant, anvil, fill_bottles, brew, drink, nether_portal, build, write_sign,
-  redstone, schematic, schematic_info, list_schematics, download_schematic, web_search, crystal_pvp, duel, custom, skill: custom, make_farm, house,
+  redstone, schematic, schematic_info, list_schematics, download_schematic, web_search, crystal_pvp, duel, custom, skill: custom, make_farm, auto_farm, afk, house,
 }
 
 async function execute(inst, action, ctx) {

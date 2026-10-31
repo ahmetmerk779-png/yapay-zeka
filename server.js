@@ -11,7 +11,7 @@ const ai = require('./src/ai')
 const Sch = require('./src/schematic')
 
 const PORT = parseInt(process.env.PANEL_PORT || '3000')
-const HOST = process.env.PANEL_HOST || '127.0.0.1'
+const HOST = process.env.PANEL_HOST || '0.0.0.0'
 const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'
 const ENV_KEY = process.env.GROQ_API_KEY || ''
 

@@ -23,6 +23,13 @@ function single(t, botName) {
   if (/^(gel|buraya gel|yan[ıi]ma gel|bana gel|come( here)?)$/.test(t)) return [{ type: 'goto_player', target: 'sender' }]
   if (/^((bana|yan[ıi]ma|buraya) (elytra ile |roketle )?u[cç]|(elytra|roket)(le|\s?ile)? (bana|yan[ıi]ma) u[cç]a?(rak gel)?)$/.test(t)) return [{ type: 'fly', target: 'sender' }]
   if (/^(u[cç]|elytra (ile )?u[cç]|havalan|fly|takeoff)$/.test(t)) return [{ type: 'fly', height: 60 }]
+  if (/^(durum|rapor|durumun ne|ne durumdas[ıi]n|status|envanter(in)?|envanterin ne)$/.test(t)) return [{ type: 'status' }]
+  if (/^(ke[sş]fet|explore|etrafi gez|etraf[ıi] ke[sş]fet)$/.test(t)) return [{ type: 'explore', direction: 'random', blocks: 100 }]
+  if (/^(beni koru|koru beni|bizi koru|protect me)$/.test(t)) return [{ type: 'protect', target: 'sender', seconds: 180 }]
+  if (/^(sand[ıi]klar[ıi] (yağmala|yagmala|soy|bo[sş]alt)|loot)$/.test(t)) return [{ type: 'loot', radius: 16 }]
+  if (/^(envanteri (sand[ıi][gğ]a )?(bo[sş]alt|depola)|e[sş]yalar[ıi] sand[ıi][gğ]a koy)$/.test(t)) return [{ type: 'store_all', radius: 16 }]
+  { const m = /^(?:afk(?: ol| kal)?|afk moduna ge[cç])(?:\s+(\d{1,3})\s*(?:dk|dakika|min))?$/.exec(t); if (m) return [{ type: 'afk', minutes: m[1] ? Number(m[1]) : 0 }] }
+  { const m = /^(?:otomatik (?:hasat|tarla)|hasat d[oö]ng[uü]s[uü]|auto ?farm)(?:\s+(\d{1,3})\s*(?:dk|dakika|min))?$/.exec(t); if (m) return [{ type: 'auto_farm', radius: 16, minutes: m[1] ? Number(m[1]) : 0, store: true }] }
   if (/^(ye|yemek ye|karn[ıi]n[ıi] doyur|eat)$/.test(t)) return [{ type: 'eat' }]
   if (/^(uyu|yat|ya[gğ]a[gğ]a yat|sleep)$/.test(t)) return [{ type: 'sleep' }]
   if (/^(uyan|wake|kalk)$/.test(t)) return [{ type: 'wake' }]

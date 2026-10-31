@@ -269,9 +269,11 @@ class BotInstance {
         const Motion = require('./motion')
         Motion.installSmoothLook(bot)
         Motion.installHumanDig(bot)
+        try { require('./humanize').install(this) } catch (e) { this.log('warn', 'humanize yüklenemedi: ' + e.message) }
         try { require('./autotool').install(this) } catch (e) { this.log('warn', 'autotool yüklenemedi: ' + e.message) }
         Motion.tuneMovements(this.movements, this.mcData)
         this.timers.push(Motion.startIdleGlance(this))
+        this.timers.push(Motion.startPathWatchdog(this))
       } catch (e) { this.log('warn', `motion.js yüklenemedi (kafa çevirme anlık olacak): ${e.message}`) }
       bot.pathfinder.setMovements(this.movements)
       this.ready = true
@@ -392,7 +394,21 @@ class BotInstance {
     const bot = this.bot
     // Açlık 6 ve altındayken sprint yapılamaz (vanilla kuralı); yapılırsa Grim gibi anti-cheat'ler "Simulation" ile atar
     if (typeof bot.food === 'number') {
-      const canSprint = bot.food > 6
+      let canSprint = bot.food > 6
+      // İnsan gibi koş: hassas işlerde (blok koyma, kazma, inşa) ve hedefe yaklaşırken sprint yok; uzun yolda var. Dövüşe karışmaz.
+      const FINE = this._fineTypes || (this._fineTypes = new Set(['place', 'fill', 'build', 'build_shape', 'house', 'schematic', 'shelter', 'make_farm', 'bridge', 'pillar_up', 'light_area', 'write_sign', 'chop_tree', 'mine', 'mine_vein', 'dig_down', 'tunnel', 'break', 'plant', 'bone_meal', 'farm', 'auto_farm', 'fish', 'redstone', 'door', 'store', 'store_all', 'take', 'loot']))
+      const fighting = !!(bot.pvp && bot.pvp.target) || this.mode === 'flee' || this.mode === 'guard'
+      if (canSprint && !fighting) {
+        if (this.mode !== 'follow' && this.curType && FINE.has(this.curType) && this.activity && this.activity !== 'boşta') canSprint = false
+        else {
+          const g = bot.pathfinder && bot.pathfinder.goal
+          if (g) {
+            const gx = g.x !== undefined ? g.x : (g.entity && g.entity.position ? g.entity.position.x : undefined)
+            const gz = g.z !== undefined ? g.z : (g.entity && g.entity.position ? g.entity.position.z : undefined)
+            if (gx !== undefined && gz !== undefined && Math.hypot(gx - bot.entity.position.x, gz - bot.entity.position.z) < 3.5) canSprint = false
+          }
+        }
+      }
       if (!canSprint && bot.getControlState && bot.getControlState('sprint')) bot.setControlState('sprint', false)
       if (this.movements.allowSprinting !== canSprint) this.movements.allowSprinting = canSprint
     }
@@ -617,7 +633,7 @@ class BotInstance {
     let messages = [{ role: 'system', content: system }, ...hist]
     let lastPlan = null
     for (let attempt = 0; attempt < 2; attempt++) {
-      const text = await ai.chat({ apiKey: this.cfg.groqKey, model: this.cfg.model, messages, json: true, maxTokens: 700 })
+      const text = await ai.chat({ apiKey: this.cfg.groqKey, model: this.cfg.model, messages, json: true, maxTokens: 900, temperature: 0.2 })
       const ex = ai.extractJson(text)
       let problems = []
       let plan = null
@@ -630,10 +646,10 @@ class BotInstance {
       } else {
         problems = ['Geçerli bir JSON nesnesi ayrıştırılamadı (sözdizimi hatası).']
       }
-      if (plan) lastPlan = plan
+      if (plan && (!lastPlan || plan.actions.length >= lastPlan.actions.length)) lastPlan = plan
       if (!problems.length) return plan
       // Kısmi başarı: en az bir geçerli eylem varsa yeniden denemeden çalıştır (token tasarrufu); atlananlar oyuncuya bildirilir
-      if (plan && plan.actions.length) return plan
+      if (plan && plan.actions.length && attempt === 1) return plan
       this.log('warn', `AI planında sorun (deneme ${attempt + 1}): ${problems.join(' | ')}`)
       if (attempt === 0) {
         messages = [
@@ -855,6 +871,7 @@ class BotInstance {
       const a = actions[i]
       if (cancelled()) return
       this.activity = JSON.stringify(simplify(a))
+      this.curType = a.type
       this.log('action', `▶ ${this.activity}`)
       let r
       try {

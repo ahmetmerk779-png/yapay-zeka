@@ -8,11 +8,15 @@ const nbt = require('prismarine-nbt')
 
 const SCHEM_DIR = process.env.SCHEMATIC_DIR || path.join(__dirname, '..', 'schematics')
 const EXTS = ['.schem', '.litematic', '.nbt', '.schematic']
-const MAX_FILE_BYTES = 20 * 1024 * 1024
-const MAX_BLOCKS = 300000
+// Yükleme sınırı 2 GB (SCHEM_MAX_BYTES ile değiştirilebilir). Dosya diske AKARAK yazılır, RAM'e alınmaz.
+// Ama bir şematiği KURMAK için dosyanın belleğe okunması gerekir: MAX_LOAD_BYTES üstü dosyalar saklanır ama yüklenemez.
+const MAX_FILE_BYTES = Number(process.env.SCHEM_MAX_BYTES) || 2 * 1024 * 1024 * 1024
+const MAX_LOAD_BYTES = Number(process.env.SCHEM_LOAD_MAX_BYTES) || 256 * 1024 * 1024
+const fmtBytes = (n) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : `${Math.round(n / 1024 ** 2)} MB`)
+const MAX_BLOCKS = Number(process.env.SCHEM_MAX_BLOCKS) || 2000000
 
 const SKIP_BLOCKS = new Set(['air', 'cave_air', 'void_air', 'structure_void', 'jigsaw', 'structure_block', 'barrier', 'light'])
-const NO_ITEM = new Set(['water', 'lava', 'fire', 'soul_fire', 'moving_piston', 'piston_head', 'nether_portal', 'end_portal', 'end_gateway', 'bubble_column', 'frosted_ice', 'tall_seagrass_top'])
+const NO_ITEM = new Set(['fire', 'soul_fire', 'moving_piston', 'piston_head', 'nether_portal', 'end_portal', 'end_gateway', 'bubble_column', 'frosted_ice', 'tall_seagrass_top'])
 
 const FACING_CW = { north: 'east', east: 'south', south: 'west', west: 'north' }
 
@@ -50,7 +54,7 @@ function resolveFile(input) {
 
 function saveFile(name, buffer) {
   ensureDir()
-  if (buffer.length > MAX_FILE_BYTES) throw new Error('dosya 20 MB sınırını aşıyor')
+  if (buffer.length > MAX_FILE_BYTES) throw new Error(`dosya ${fmtBytes(MAX_FILE_BYTES)} sınırını aşıyor`)
   const safe = sanitizeName(name)
   fs.writeFileSync(path.join(SCHEM_DIR, safe), buffer)
   return safe
@@ -75,7 +79,7 @@ function parseBlockString(s) {
 function pushBlock(out, x, y, z, name, props) {
   if (SKIP_BLOCKS.has(name)) return
   out.push({ x, y, z, name, props: props || {} })
-  if (out.length > MAX_BLOCKS) throw new Error(`şematik çok büyük (${MAX_BLOCKS} bloktan fazla)`)
+  if (out.length > MAX_BLOCKS) throw new Error(`şematik çok büyük (${MAX_BLOCKS} bloktan fazla; SCHEM_MAX_BLOCKS ile artırılabilir ama bellek ister)`)
 }
 
 function decodeVarints(bytes, expected) {
@@ -192,7 +196,10 @@ async function parseBuffer(buffer, ext) {
 async function load(input) {
   const file = resolveFile(input)
   if (!file) throw new Error(`şematik bulunamadı: "${input}". Mevcut: ${listFiles().map((f) => f.name).join(', ') || 'hiç dosya yok'}`)
-  const buffer = fs.readFileSync(path.join(SCHEM_DIR, file))
+  const full = path.join(SCHEM_DIR, file)
+  const bytes = fs.statSync(full).size
+  if (bytes > MAX_LOAD_BYTES) throw new Error(`şematik ${fmtBytes(bytes)}: kurmak için belleğe okunması gerekiyor ama sınır ${fmtBytes(MAX_LOAD_BYTES)} (sunucu belleği yetmez). Daha küçük parçalara böl ya da daha fazla RAM'li bir sunucuda SCHEM_LOAD_MAX_BYTES'ı artır`)
+  const buffer = fs.readFileSync(full)
   const ext = path.extname(file).toLowerCase()
   const s = await parseBuffer(buffer, ext)
   if (!s.blocks.length) throw new Error('şematikte yerleştirilecek blok yok')
@@ -236,7 +243,7 @@ const ITEM_RENAMES = {
   beetroots: 'beetroot_seeds', melon_stem: 'melon_seeds', pumpkin_stem: 'pumpkin_seeds', attached_melon_stem: 'melon_seeds',
   attached_pumpkin_stem: 'pumpkin_seeds', sweet_berry_bush: 'sweet_berries', cocoa: 'cocoa_beans', kelp_plant: 'kelp',
   bamboo_sapling: 'bamboo', tall_seagrass: 'seagrass', big_dripleaf_stem: 'big_dripleaf', water_cauldron: 'cauldron',
-  lava_cauldron: 'cauldron', powder_snow_cauldron: 'cauldron', wall_torch: 'torch', soul_wall_torch: 'soul_torch',
+  lava_cauldron: 'cauldron', powder_snow_cauldron: 'cauldron', farmland: 'dirt', wall_torch: 'torch', soul_wall_torch: 'soul_torch',
   redstone_wall_torch: 'redstone_torch', cave_vines: 'glow_berries', cave_vines_plant: 'glow_berries',
   weeping_vines_plant: 'weeping_vines', twisting_vines_plant: 'twisting_vines',
 }
@@ -245,6 +252,10 @@ function blockToItem(b, mcData) {
   const n = b.name
   const p = b.props || {}
   if (SKIP_BLOCKS.has(n) || NO_ITEM.has(n)) return null
+  if (n === 'water' || n === 'lava') {                          // sadece kaynak bloklar kovayla elle konur; akan sıvı kendiliğinden oluşur
+    if (p.level !== undefined && p.level !== '0') return null
+    return { item: `${n}_bucket`, count: 1 }
+  }
   if (p.half === 'upper' || p.part === 'head') return null    // kapı üst yarısı, yatak başı
   let item = ITEM_RENAMES[n] || n
   item = item.replace(/_wall_(sign|hanging_sign|banner|head|skull)$/, '_$1')
@@ -275,43 +286,6 @@ function missingMaterials(need, haveFn) {
   return Object.entries(need).map(([item, k]) => ({ item, need: k, have: haveFn(item) })).filter((m) => m.have < m.need)
 }
 
-// ------------------------------------------------------------------ komutlar
-const stateString = (b) => {
-  const keys = Object.keys(b.props || {}).sort()
-  return `minecraft:${b.name}${keys.length ? `[${keys.map((k) => `${k}=${b.props[k]}`).join(',')}]` : ''}`
-}
-
-// blocks: {x,y,z,...} (şematik koordinatı), origin: dünya koordinatı. Aynı satırdaki ardışık aynı blokları /fill ile birleştirir.
-function compileCommands(blocks, origin) {
-  const cmds = []
-  const sorted = [...blocks].sort((a, b) => a.y - b.y || a.z - b.z || a.x - b.x)
-  let i = 0
-  while (i < sorted.length) {
-    const b = sorted[i]
-    const st = stateString(b)
-    let j = i
-    while (j + 1 < sorted.length && sorted[j + 1].y === b.y && sorted[j + 1].z === b.z && sorted[j + 1].x === sorted[j].x + 1 && stateString(sorted[j + 1]) === st) j++
-    const len = j - i + 1
-    const x1 = origin.x + b.x, y = origin.y + b.y, z = origin.z + b.z
-    if (len >= 3) cmds.push(`/fill ${x1} ${y} ${z} ${x1 + len - 1} ${y} ${z} ${st}`)
-    else for (let k = i; k <= j; k++) cmds.push(`/setblock ${origin.x + sorted[k].x} ${y} ${z} ${st}`)
-    i = j + 1
-  }
-  return cmds
-}
-
-// Bölgeyi havayla temizleyen /fill komutları (komut başına en fazla 32768 blok)
-function clearCommands(origin, size) {
-  const cmds = []
-  const area = size.x * size.z
-  const step = Math.max(1, Math.floor(32768 / area))
-  for (let y = 0; y < size.y; y += step) {
-    const y2 = Math.min(size.y - 1, y + step - 1)
-    cmds.push(`/fill ${origin.x} ${origin.y + y} ${origin.z} ${origin.x + size.x - 1} ${origin.y + y2} ${origin.z + size.z - 1} minecraft:air`)
-  }
-  return cmds
-}
-
 function describe(schem, mcData, haveFn) {
   const { need, unknown } = materials(schem, mcData)
   const top = Object.entries(need).sort((a, b) => b[1] - a[1]).slice(0, 12).map(([i, k]) => `${i} x${k}`).join(', ')
@@ -326,7 +300,7 @@ function describe(schem, mcData, haveFn) {
 }
 
 module.exports = {
-  SCHEM_DIR, EXTS, MAX_FILE_BYTES, listFiles, resolveFile, saveFile, deleteFile, sanitizeName, ensureDir,
+  SCHEM_DIR, EXTS, MAX_FILE_BYTES, MAX_LOAD_BYTES, fmtBytes, listFiles, resolveFile, saveFile, deleteFile, sanitizeName, ensureDir,
   load, parseBuffer, parseBlockString, rotate, rotateProps, materials, missingMaterials, blockToItem,
-  compileCommands, clearCommands, stateString, describe,
+  describe,
 }

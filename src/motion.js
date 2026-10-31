@@ -74,9 +74,39 @@ function tuneMovements(mov, mcData) {
   mov.allowEntityDetection = true
   mov.liquidCost = 4
   mov.digCost = 3          // mümkünse kazmak yerine dolaş (yavaş ve takılgan olmasın)
-  mov.placeCost = 4        // iskele/köprü kurmaktan kaçın
+  mov.placeCost = 14       // havada iskele/köprü kurmak son çare: önce dolaş, kaz ya da atla
+  mov.allow1by1towers = false   // kendi altına kule çıkma sadece yol hiç yoksa (goTo son denemelerde açar)
   mov.entityCost = 2
   mov.maxDropDown = 4
+}
+
+// Yol bulucu takılırsa (takip/nöbet gibi goTo dışındaki hareketlerde) zıpla, olmazsa hedefi yeniden hesapla
+function startPathWatchdog(inst) {
+  const bot = inst.bot
+  let last = null
+  let since = 0
+  let kicked = 0
+  return setInterval(() => {
+    try {
+      if (!inst.ready || !bot.entity || !bot.pathfinder) return
+      const moving = !!(bot.pathfinder.isMoving && bot.pathfinder.isMoving())
+      const idleish = inst.mode === 'follow' || inst.mode === 'guard' || inst.activity === 'boşta'
+      if (!moving || !idleish || bot.targetDigBlock) { last = null; kicked = 0; return }
+      const p = bot.entity.position
+      if (!last || p.distanceTo(last) > 0.25) { last = p.clone(); since = Date.now(); kicked = 0; return }
+      const stuckFor = Date.now() - since
+      if (stuckFor > 3500 && kicked < 1) {
+        kicked = 1
+        bot.setControlState('jump', true)
+        setTimeout(() => bot.setControlState('jump', false), 350)
+      } else if (stuckFor > 7000 && kicked < 2) {
+        kicked = 2
+        const g = bot.pathfinder.goal
+        bot.pathfinder.setGoal(null)
+        setTimeout(() => { try { if (g) bot.pathfinder.setGoal(g, g.dynamic === true || (g.entity !== undefined)) } catch (e) { /* */ } }, 300)
+      }
+    } catch (e) { /* önemsiz */ }
+  }, 700)
 }
 
 // Boştayken yakındaki oyuncuya bak / etrafa göz at (komut yokken yaptığı tek şey kafa çevirmek)
@@ -165,6 +195,7 @@ function installHumanDig(bot) {
         if (cur && !cur.position.equals(block.position)) {   // imleç kaydı: bir kez daha nişan al
           await bot.lookAt(pt, false); await sleep(rnd(60, 120))
         }
+        bot.setControlState('sprint', false)   // kazarken koşulmaz
         await rawDig(block, 'ignore', 'raycast')
         if (!(bot.game && bot.game.gameMode === 'creative')) await sleep(rnd(30, 140))
         return
@@ -177,4 +208,5 @@ function installHumanDig(bot) {
   }
 }
 
-module.exports = { installHumanDig, installSmoothLook, tuneMovements, startIdleGlance, wrap, clamp, quant }
+module.exports = {
+  startPathWatchdog, installHumanDig, installSmoothLook, tuneMovements, startIdleGlance, wrap, clamp, quant }

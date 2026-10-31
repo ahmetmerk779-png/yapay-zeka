@@ -385,6 +385,12 @@ async function placeAt(inst, itemName, pos, opts = {}) {
 
   const eyeDist = (v) => bot.entity.position.offset(0, 1.62, 0).distanceTo(v)
   const center = pos.offset(0.5, 0.5, 0.5)
+  // Yaslanacak katı komşu yoksa (suyun/havanın ortası) boşuna ileri geri gitme
+  const hasRef = [[0, -1, 0], [1, 0, 0], [-1, 0, 0], [0, 0, 1], [0, 0, -1], [0, 1, 0]].some((f) => {
+    const r = bot.blockAt(pos.offset(f[0], f[1], f[2]))
+    return r && !isAir(r) && !isLiquid(r) && r.boundingBox === 'block'
+  })
+  if (!hasRef) return 'noref'
   await moveNear(inst, pos)
   if (eyeDist(center) > 5.0) { await moveNear(inst, pos) }   // bir kez daha yaklaşmayı dene
   if (eyeDist(center) > 5.4) return 'far'                    // menzil dışı: boşuna bekleme, sonra yeniden denenecek
@@ -988,7 +994,8 @@ async function farm(inst, a, { cancelled }) {
       await bot.dig(b)
       harvested++
       await sleep(200)
-      const seed = findInv(inst, CROPS[b.name].seed)
+      let seed = findInv(inst, CROPS[b.name].seed)
+      if (!seed && (await ensureItem(inst, CROPS[b.name].seed, 64))) seed = findInv(inst, CROPS[b.name].seed)
       const ground = bot.blockAt(pos.offset(0, -1, 0))
       if (seed && ground && ['farmland', 'soul_sand'].includes(ground.name)) {
         await bot.equip(seed, 'hand')
@@ -998,6 +1005,7 @@ async function farm(inst, a, { cancelled }) {
     } catch (e) { /* sıradaki */ }
   }
   if (cancelled()) return fail('iptal edildi')
+  if (harvested > 0) { try { await pickup(inst, { radius: Math.min(a.radius, 10) }, { cancelled }) } catch (e) { /* */ } }
   return harvested > 0 ? ok(`${harvested} ekin hasat ettim, ${replanted} tanesini yeniden diktim`) : fail(`${a.radius} blok çevrede olgun ekin bulamadım`)
 }
 
@@ -1392,6 +1400,14 @@ async function placeOne(inst, t, creative) {
  * targets: [{ pos:Vec3, item:string (envanter adı), blockName:string, hints?, kind?:'normal'|'liquid'|'double'|'farmland' }]
  * opts: { cancelled, partial, label }
  */
+// Elle konamayan tek bir blok için OP komutunu dene (su içi/havada yaslanacak yer olmayan bloklar)
+async function opCmdOne(inst, t, cancelled) {
+  try {
+    const d = await OpBuild.placeTargets(inst, [t], cancelled, { min: 1 })
+    return d.has(t)
+  } catch (e) { return false }
+}
+
 async function placeMany(inst, targets, opts = {}) {
   const bot = inst.bot
   const cancelled = opts.cancelled || (() => false)
@@ -1483,7 +1499,8 @@ async function placeMany(inst, targets, opts = {}) {
       continue
     }
     const t = todo[st.i]
-    const r = await placeOne(inst, t, creative)
+    let r = await placeOne(inst, t, creative)
+    if (r !== 'ok' && r !== 'full' && r !== 'noitem' && opts.cmd !== false) r = (await opCmdOne(inst, t, cancelled)) ? 'ok' : r
     remainingNeed[t.item] = Math.max(0, (remainingNeed[t.item] || 0) - (t.kind === 'double' ? 2 : 1))
     if (r === 'ok') stats.placed++
     else if (r === 'noitem') stats.noitem++
@@ -1502,7 +1519,8 @@ async function placeMany(inst, targets, opts = {}) {
       if (cancelled()) { stats.cancelled = true; break }
       const cur = bot.blockAt(t.pos)
       if (cur && cur.name === t.blockName) { stats.placed++; continue }
-      const r = await placeOne(inst, t, creative)
+      let r = await placeOne(inst, t, creative)
+      if (r !== 'ok' && r !== 'full' && r !== 'noitem' && opts.cmd !== false) r = (await opCmdOne(inst, t, cancelled)) ? 'ok' : r
       if (r === 'ok') stats.placed++
       else if (r === 'noitem') stats.noitem++
       else if (r !== 'full') next.push(t)
@@ -2232,7 +2250,7 @@ async function schematic(inst, a, { cancelled }) {
     if (b.name === 'water' || b.name === 'lava') kind = 'liquid'
     else if (b.name === 'farmland') kind = 'farmland'
     else if (/_slab$/.test(b.name) && b.props.type === 'double') kind = 'double'
-    targets.push({ pos, item: it.item, blockName: b.name, kind, hints: hintsFor(b.name, b.props) })
+    targets.push({ pos, item: it.item, blockName: b.name, kind, props: b.props, hints: hintsFor(b.name, b.props) })
   }
   let cleared = 0
   if (a.withAir) cleared = await clearRegion(inst, origin, s.size, keep, cancelled)
@@ -2260,9 +2278,10 @@ async function download_schematic(inst, a) {
     const res = await fetch(a.url, { signal: ctrl.signal, redirect: 'follow', headers: { 'user-agent': 'MinecraftAIBot/3.0' } })
     if (!res.ok) return fail(`indirilemedi (HTTP ${res.status})`)
     const len = Number(res.headers.get('content-length') || 0)
-    if (len > Sch.MAX_FILE_BYTES) return fail('dosya 20 MB sınırını aşıyor')
+    const dlMax = Math.min(Sch.MAX_FILE_BYTES, Sch.MAX_LOAD_BYTES)   // internetten indirme belleğe alınır: yükleme sınırından düşük
+    if (len > dlMax) return fail(`dosya ${Sch.fmtBytes(dlMax)} indirme sınırını aşıyor (panelden yükle, 2 GB'a kadar)`)
     const buf = Buffer.from(await res.arrayBuffer())
-    if (buf.length > Sch.MAX_FILE_BYTES) return fail('dosya 20 MB sınırını aşıyor')
+    if (buf.length > dlMax) return fail(`dosya ${Sch.fmtBytes(dlMax)} indirme sınırını aşıyor`)
     const name = Sch.saveFile(a.name, buf)
     try { await Sch.load(name) } catch (e) { Sch.deleteFile(name); return fail(`indirilen dosya geçerli bir şematik değil: ${e.message}`) }
     return ok(`${name} indirildi (${Math.round(buf.length / 1024)} KB)`)
@@ -2430,65 +2449,167 @@ async function crystal_pvp(inst, a, { cancelled }) {
 }
 
 // ---- 9x9 (yarıçap R) çalışan tarla: ortada su, çevresi çapalanmış ve ekilmiş
+// Tohum yoksa (buğday) çimen kırarak topla. Diğer ekinler için tohum bulunamaz.
+async function gatherSeeds(inst, seedName, need, cancelled, ms) {
+  const bot = inst.bot
+  if (seedName !== 'wheat_seeds') return
+  const GRASS = new Set(['short_grass', 'grass', 'tall_grass'])
+  const t0 = Date.now()
+  let n = 0
+  while (!cancelled() && invCount(inst, seedName) < need && Date.now() - t0 < ms) {
+    const g = bot.findBlock({ matching: (b) => GRASS.has(b.name), maxDistance: 24 })
+    if (!g) break
+    if (!(await goTo(inst, new goals.GoalNear(g.position.x, g.position.y, g.position.z, 2)))) { await sleep(300); continue }
+    try { await digBlock(inst, g) } catch (e) { /* sıradaki */ }
+    if (++n % 4 === 0) { try { await pickup(inst, { radius: 5 }, { cancelled }) } catch (e) { /* */ } }
+  }
+  try { await pickup(inst, { radius: 6 }, { cancelled }) } catch (e) { /* */ }
+}
+
 async function make_farm(inst, a, { cancelled }) {
   const bot = inst.bot
+  const cropBlock = a.crop
   const seedName = { wheat: 'wheat_seeds', carrots: 'carrot', potatoes: 'potato', beetroots: 'beetroot_seeds' }[a.crop]
-  const hoe = bot.inventory.items().find((i) => i.name.endsWith('_hoe'))
-  if (!hoe) return fail('envanterimde çapa (hoe) yok')
-  const bucket = findInv(inst, 'water_bucket')
-  if (!bucket) return fail('envanterimde su kovası (water_bucket) yok')
-  const R = a.radius
+  const R = Math.min(a.radius, 4)                 // tek su bloğu en fazla 4 blok uzağı sular
   const cells = (R * 2 + 1) ** 2 - 1
-  if (invCount(inst, seedName) < cells) return fail(`${cells} adet ${seedName} lazım, envanterimde ${invCount(inst, seedName)} var`)
   const c = bot.entity.position.floored()
   const [fx, fz] = yawDir(bot.entity.yaw)
   const center = c.offset(fx * (a.offset + R), -1, fz * (a.offset + R))     // merkez zemin bloğu
   const ground = []
   for (let dx = -R; dx <= R; dx++) for (let dz = -R; dz <= R; dz++) if (dx || dz) ground.push(center.offset(dx, 0, dz))
-  const okGround = new Set(['dirt', 'grass_block', 'farmland', 'coarse_dirt', 'rooted_dirt', 'podzol', 'mycelium'])
-  const bad = ground.filter((p) => { const b = bot.blockAt(p); return !b || !okGround.has(b.name) }).length
-  if (bad > cells * 0.2) return fail(`alanın ${bad}/${cells} zemini toprak/çimen değil, düz bir yer seç`)
   const near = async (p, r = 3) => { if (bot.entity.position.offset(0, 1.62, 0).distanceTo(p.offset(0.5, 1, 0.5)) > 4.2) await goTo(inst, new goals.GoalNear(p.x, p.y + 1, p.z, r)) }
+  const notes = []
 
-  // 1) üstteki bitkileri temizle
-  for (const p of ground) {
-    if (cancelled()) return fail('iptal edildi')
-    const up = bot.blockAt(p.offset(0, 1, 0))
-    if (up && !isAir(up) && up.diggable && !isLiquid(up)) { await near(p); try { await digBlock(inst, up) } catch (e) { /* atla */ } }
+  // ---- A) OP / komut yolu: çapa, kova, tohum gerekmez
+  let opDone = false
+  try {
+    if (await OpBuild.available(inst)) {
+      await goTo(inst, new goals.GoalNear(center.x, center.y + 1, center.z, 3))
+      const clr = []
+      for (const p of [center, ...ground]) for (const dy of [1, 2]) { const b = bot.blockAt(p.offset(0, dy, 0)); if (b && !isAir(b)) clr.push(p.offset(0, dy, 0)) }
+      if (clr.length) { try { await OpBuild.clearPositions(inst, clr, cancelled) } catch (e) { /* */ } }
+      const mk = (pos, blockName, props) => ({ pos, blockName, props })
+      const base = ground.map((p) => mk(p, 'farmland', { moisture: 7 }))
+      base.push(mk(center, 'water'))
+      // çit halkası (bota bakan kenarın ortası açık) + köşelere meşale
+      const fence = []
+      const torch = []
+      for (let dx = -R - 1; dx <= R + 1; dx++) for (let dz = -R - 1; dz <= R + 1; dz++) {
+        if (Math.max(Math.abs(dx), Math.abs(dz)) !== R + 1) continue
+        if ((fx !== 0 && dx === -fx * (R + 1) && dz === 0) || (fz !== 0 && dz === -fz * (R + 1) && dx === 0)) continue   // giriş boşluğu
+        const p = center.offset(dx, 1, dz)
+        fence.push(mk(p, 'oak_fence'))
+        if (Math.abs(dx) === R + 1 && Math.abs(dz) === R + 1) torch.push(mk(p.offset(0, 1, 0), 'torch'))
+      }
+      const s1 = await OpBuild.placeTargets(inst, [...base, ...fence], cancelled)
+      const crops = ground.map((p) => mk(p.offset(0, 1, 0), cropBlock, { age: 0 }))
+      const s2 = await OpBuild.placeTargets(inst, [...crops, ...torch], cancelled)
+      const farmOk = ground.filter((p) => (bot.blockAt(p) || {}).name === 'farmland').length
+      const cropOk = ground.filter((p) => (bot.blockAt(p.offset(0, 1, 0)) || {}).name === cropBlock).length
+      const waterOk = (bot.blockAt(center) || {}).name === 'water'
+      if (farmOk >= cells * 0.9 && waterOk && cropOk >= cells * 0.9) {
+        return ok(`komutla tarla kurdum: ${farmOk} tarla, ${cropOk} ${cropBlock}, su ve çit tamam (${s1.size + s2.size} blok)`)
+      }
+      opDone = farmOk > 0
+      notes.push(`komut yolu eksik kaldı (tarla ${farmOk}/${cells}, ekin ${cropOk}/${cells}${waterOk ? '' : ', su yok'}); kalanı elle tamamlıyorum`)
+    }
+  } catch (e) { notes.push(`komut yolu hata verdi (${e.message})`) }
+
+  // ---- B) Malzemeleri hazırla (creative → al, survival → craft / topla)
+  let hoe = bot.inventory.items().find((i) => i.name.endsWith('_hoe'))
+  if (!hoe && !opDone) {
+    if (await ensureItem(inst, 'diamond_hoe', 1)) hoe = findInv(inst, 'diamond_hoe')
+    else { try { await craftItem(inst, 'wooden_hoe', 1, cancelled, 0) } catch (e) { /* */ } hoe = bot.inventory.items().find((i) => i.name.endsWith('_hoe')) }
   }
-  // 2) ortadaki bloğu kaz, suyu koy
-  await near(center, 2)
-  const cb = bot.blockAt(center)
-  if (cb && !isAir(cb)) { try { await digBlock(inst, cb) } catch (e) { return fail(`merkez kazılamadı: ${e.message}`) } }
-  await bot.equip(bucket, 'hand')
-  await bot.lookAt(center.offset(0.5, 0, 0.5), true)
-  bot.activateItem()
-  await sleep(700)
-  // 3) çapala
-  await bot.equip(hoe, 'hand')
+  if (!hoe && !opDone) return fail('çapa yok ve yapamadım (2 odun + 2 çubuk lazım; önce "odun topla" dene)')
+
+  let bucket = findInv(inst, 'water_bucket')
+  const waterThere = () => (bot.blockAt(center) || {}).name === 'water'
+  if (!bucket && !waterThere()) {
+    if (await ensureItem(inst, 'water_bucket', 1)) bucket = findInv(inst, 'water_bucket')
+    else {
+      let empty = findInv(inst, 'bucket')
+      if (!empty) { try { await craftItem(inst, 'bucket', 1, cancelled, 0) } catch (e) { /* */ } empty = findInv(inst, 'bucket') }
+      if (empty) {
+        const w = bot.findBlock({ matching: (b) => b.name === 'water' && Number(b.metadata) === 0, maxDistance: 48 })
+        if (w) {
+          await goTo(inst, new goals.GoalNear(w.position.x, w.position.y, w.position.z, 2))
+          for (let t = 0; t < 3 && !findInv(inst, 'water_bucket'); t++) {
+            await bot.equip(empty, 'hand')
+            await bot.lookAt(w.position.offset(0.5, 0.9, 0.5), true)
+            bot.activateItem(); await sleep(600)
+          }
+          bucket = findInv(inst, 'water_bucket')
+        }
+      }
+    }
+    if (!bucket) return fail('su kovası yok: 3 demir ile kova yapıp su kaynağından doldurmam lazım; yakında su ya da demir bulamadım')
+  }
+
+  let have = invCount(inst, seedName)
+  if (!opDone && have < cells) {
+    await ensureItem(inst, seedName, 64)
+    have = invCount(inst, seedName)
+    if (have < cells && seedName === 'wheat_seeds') { notes.push('çimenden tohum topluyorum'); await gatherSeeds(inst, seedName, cells, cancelled, 90000); have = invCount(inst, seedName) }
+  }
+  if (!opDone && have < 4) return fail(`${seedName} yok (${have}). ${seedName === 'wheat_seeds' ? 'Çimen kırıp bulamadım' : 'Bunu survival\'da köylüden/zombiden/ekinden alabilirim'}; bana ver ya da creative ver`)
+
+  // ---- C) Zemin kontrolü (komut yolu zemini zaten çevirdiyse atla)
+  if (!opDone) {
+    const okGround = new Set(['dirt', 'grass_block', 'farmland', 'coarse_dirt', 'rooted_dirt', 'podzol', 'mycelium'])
+    const bad = ground.filter((p) => { const b = bot.blockAt(p); return !b || !okGround.has(b.name) }).length
+    if (bad > cells * 0.2) return fail(`alanın ${bad}/${cells} zemini toprak/çimen değil, düz bir yer seç`)
+  }
+
+  // ---- D) Elle: bitkileri temizle, su, çapala, ek
+  if (!opDone) {
+    for (const p of ground) {
+      if (cancelled()) return fail('iptal edildi')
+      const up = bot.blockAt(p.offset(0, 1, 0))
+      if (up && !isAir(up) && up.diggable && !isLiquid(up)) { await near(p); try { await digBlock(inst, up) } catch (e) { /* atla */ } }
+    }
+  }
+  if (!waterThere() && bucket) {
+    await near(center, 2)
+    const cb = bot.blockAt(center)
+    if (cb && !isAir(cb) && cb.name !== 'water') { try { await digBlock(inst, cb) } catch (e) { return fail(`merkez kazılamadı: ${e.message}`) } }
+    for (let t = 0; t < 3 && !waterThere(); t++) {
+      await bot.equip(bucket, 'hand')
+      await bot.lookAt(center.offset(0.5, 0, 0.5), true)
+      bot.activateItem()
+      await sleep(700)
+    }
+    if (!waterThere()) notes.push('UYARI: su yerleşmedi, tarla kurumuş kalabilir')
+  }
   let tilled = 0
-  for (const p of ground) {
-    if (cancelled()) return fail('iptal edildi')
-    const b = bot.blockAt(p)
-    if (!b || b.name === 'farmland') { if (b) tilled++; continue }
-    await near(p)
-    try { await bot.equip(hoe, 'hand'); await bot.activateBlock(b); await sleep(60); tilled++ } catch (e) { /* atla */ }
+  if (hoe) {
+    await bot.equip(hoe, 'hand')
+    for (const p of ground) {
+      if (cancelled()) return fail('iptal edildi')
+      const b = bot.blockAt(p)
+      if (!b) continue
+      if (b.name === 'farmland') { tilled++; continue }
+      await near(p)
+      if (await tillBlock(inst, p)) tilled++
+    }
   }
-  // 4) ek
   let planted = 0
-  for (const p of ground) {
-    if (cancelled()) return fail('iptal edildi')
-    const b = bot.blockAt(p)
-    if (!b || b.name !== 'farmland' || !isAir(bot.blockAt(p.offset(0, 1, 0)))) continue
-    const seed = findInv(inst, seedName)
-    if (!seed) break
-    await near(p)
-    try { await bot.equip(seed, 'hand'); await bot.placeBlock(b, new Vec3(0, 1, 0)); planted++ } catch (e) { /* atla */ }
+  {
+    for (const p of ground) {
+      if (cancelled()) return fail('iptal edildi')
+      const b = bot.blockAt(p)
+      if (!b || b.name !== 'farmland' || !isAir(bot.blockAt(p.offset(0, 1, 0)))) continue
+      const seed = findInv(inst, seedName)
+      if (!seed) { notes.push(`tohum bitti (${planted} ekildi)`); break }
+      await near(p)
+      try { await bot.equip(seed, 'hand'); await bot.placeBlock(b, new Vec3(0, 1, 0)); planted++ } catch (e) { /* atla */ }
+    }
   }
-  const waterOk = (bot.blockAt(center) || {}).name === 'water'
-  return planted > 0
-    ? ok(`${tilled} tarla çapaladım, ${planted} ${a.crop} ektim${waterOk ? ', ortada su var' : ', UYARI: ortadaki su yerleşmemiş olabilir'}`)
-    : fail(`ekim yapamadım (${tilled} blok çapalandı). Zemin/menzil sorunu olabilir`)
+  const total = ground.filter((p) => (bot.blockAt(p.offset(0, 1, 0)) || {}).name === cropBlock).length
+  const tail = notes.length ? ` (${notes.join('; ')})` : ''
+  return total > 0
+    ? ok(`${tilled} tarla hazır, ${total}/${cells} ${a.crop} ekili${tail}`)
+    : fail(`ekim yapamadım (${tilled} blok çapalandı)${tail}`)
 }
 
 // ---- parametrik ev

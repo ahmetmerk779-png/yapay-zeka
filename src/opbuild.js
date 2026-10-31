@@ -5,7 +5,10 @@
 const { Vec3 } = require('vec3')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
-const NOT_CMD = /(stairs|slab|door|fence|_wall$|trapdoor|button|plate|sign|_bed$|head|skull|banner|chest|barrel|shulker|pot$|ladder|vine|rail|torch|lantern|carpet|pane|bars|sapling|flower|crop|furnace|table|anvil|command|campfire|candle|coral|fan|lever|redstone|piston|observer|hopper|dispenser|dropper|bell|cauldron|water|lava|fire|portal|cake|egg|lichen|moss_carpet|kelp|grass$|fern)/
+// Komutla koymak için props (durum) şart olan çok parçalı bloklar: props yoksa elle konur
+const NEEDS_PROPS = /(_door$|_bed$|^tall_|^large_fern$|sunflower|lilac|rose_bush|peony|piston_head|_banner$)/
+// Desteğe ihtiyaç duyan (önce zemin/duvar konmalı) bloklar: ikinci evrede gelir
+const ATTACHED = /(door|_bed$|trapdoor|button|lever|sign|banner|torch|ladder|head$|skull|carpet|plate|lantern|candle|rail|vine|fence_gate|pane$|bars$|redstone_wire|repeater|comparator|flower|sapling|fern|grass$|mushroom|coral|fan$|fire|kelp|seagrass|lichen|moss_carpet|snow$|hook|pot$|cake|egg|amethyst_cluster|bud$|dripleaf|azalea|roots|sprout|berries|bamboo|cactus|sugar_cane|crop|wart)/
 
 function enabled(inst) {
   if (process.env.OPBUILD === '0') return false
@@ -53,11 +56,29 @@ async function available(inst) {
   return inst._op.v
 }
 
+function stateString(inst, blockName, props) {
+  const def = inst.mcData.blocksByName[blockName]
+  if (!def || !props) return ''
+  const known = new Map((def.states || []).map((st) => [st.name, st]))
+  const parts = []
+  for (const [k, v] of Object.entries(props)) {
+    const st = known.get(k)
+    if (!st) continue
+    const val = String(v)
+    if (st.values && st.values.length && !st.values.map(String).includes(val)) continue
+    parts.push(`${k}=${val}`)
+  }
+  return parts.length ? `[${parts.join(',')}]` : ''
+}
+
 function cmdOk(inst, t) {
-  if (t.kind && t.kind !== 'normal') return false
-  if (t.hints && Object.keys(t.hints).length) return false
-  const def = inst.mcData.blocksByName[t.blockName]
-  return !!def && def.boundingBox === 'block' && !NOT_CMD.test(t.blockName)
+  if (t.kind === 'normal' || !t.kind || t.kind === 'liquid' || t.kind === 'double' || t.kind === 'farmland') {
+    const def = inst.mcData.blocksByName[t.blockName]
+    if (!def) return false
+    if (NEEDS_PROPS.test(t.blockName) && !(t.props && (t.props.half || t.props.part))) return false
+    return true
+  }
+  return false
 }
 
 // Hücreleri (x,y,z,block) açgözlü biçimde kutulara birleştir
@@ -65,38 +86,51 @@ function boxes(cells) {
   const map = new Map(cells.map((c) => [`${c.x},${c.y},${c.z}`, c]))
   const seen = new Set()
   const key = (x, y, z) => `${x},${y},${z}`
-  const free = (x, y, z, blk) => { const c = map.get(key(x, y, z)); return c && c.block === blk && !seen.has(key(x, y, z)) }
+  const free = (x, y, z, blk, st) => { const c = map.get(key(x, y, z)); return c && c.block === blk && (c.state || '') === st && !seen.has(key(x, y, z)) }
   const out = []
   const sorted = [...map.values()].sort((a, b) => a.y - b.y || a.z - b.z || a.x - b.x)
   for (const c of sorted) {
     if (seen.has(key(c.x, c.y, c.z))) continue
     const blk = c.block
+    const st = c.state || ''
     let x2 = c.x
-    while (free(x2 + 1, c.y, c.z, blk) && x2 - c.x < 31) x2++
+    while (free(x2 + 1, c.y, c.z, blk, st) && x2 - c.x < 31) x2++
     let z2 = c.z
-    const rowOk = (z) => { for (let x = c.x; x <= x2; x++) if (!free(x, c.y, z, blk)) return false; return true }
+    const rowOk = (z) => { for (let x = c.x; x <= x2; x++) if (!free(x, c.y, z, blk, st)) return false; return true }
     while (rowOk(z2 + 1) && z2 - c.z < 31) z2++
     let y2 = c.y
-    const slabOk = (y) => { for (let z = c.z; z <= z2; z++) for (let x = c.x; x <= x2; x++) if (!free(x, y, z, blk)) return false; return true }
+    const slabOk = (y) => { for (let z = c.z; z <= z2; z++) for (let x = c.x; x <= x2; x++) if (!free(x, y, z, blk, st)) return false; return true }
     while (slabOk(y2 + 1) && y2 - c.y < 31) y2++
     for (let y = c.y; y <= y2; y++) for (let z = c.z; z <= z2; z++) for (let x = c.x; x <= x2; x++) seen.add(key(x, y, z))
-    out.push({ x1: c.x, y1: c.y, z1: c.z, x2, y2, z2, block: blk })
+    out.push({ x1: c.x, y1: c.y, z1: c.z, x2, y2, z2, block: blk, state: st })
   }
   return out
 }
 
 async function runBoxes(inst, list, cancelled) {
   const bot = inst.bot
+  const mode = inst._op && inst._op.mode
   let n = 0
-  for (const b of list.slice(0, 150)) {
+  const hasTp = inst.hasCmd ? inst.hasCmd('tp') || inst.hasCmd('teleport') : false
+  for (const b of list.slice(0, 1500)) {
     if (cancelled && cancelled()) break
+    // Yüklenmemiş bölgede komut çalışmaz: oraya ışınlan ve parçanın yüklenmesini bekle
+    const cx = Math.floor((b.x1 + b.x2) / 2)
+    const cy = Math.floor((b.y1 + b.y2) / 2)
+    const cz = Math.floor((b.z1 + b.z2) / 2)
+    if (!bot.blockAt(new Vec3(cx, cy, cz)) && mode === 'vanilla' && hasTp) {
+      bot.chat(`/tp @s ${cx} ${Math.min(318, b.y2 + 3)} ${cz}`)
+      const t0 = Date.now()
+      while (!bot.blockAt(new Vec3(cx, cy, cz)) && Date.now() - t0 < 4000) await sleep(150)
+    }
     const single = b.x1 === b.x2 && b.y1 === b.y2 && b.z1 === b.z2
-    if (inst._op && inst._op.mode === 'we') {
+    const blk = `${b.block}${b.state || ''}`
+    if (mode === 'we') {
       bot.chat(`//pos1 ${b.x1},${b.y1},${b.z1}`); await sleep(250)
       bot.chat(`//pos2 ${b.x2},${b.y2},${b.z2}`); await sleep(250)
-      bot.chat(`//set ${b.block}`)
+      bot.chat(`//set ${blk}`)
     } else {
-      bot.chat(single ? `/setblock ${b.x1} ${b.y1} ${b.z1} ${b.block}` : `/fill ${b.x1} ${b.y1} ${b.z1} ${b.x2} ${b.y2} ${b.z2} ${b.block}`)
+      bot.chat(single ? `/setblock ${b.x1} ${b.y1} ${b.z1} ${blk}` : `/fill ${b.x1} ${b.y1} ${b.z1} ${b.x2} ${b.y2} ${b.z2} ${blk}`)
     }
     n++
     await sleep(350)
@@ -106,18 +140,28 @@ async function runBoxes(inst, list, cancelled) {
 }
 
 /** todo: placeMany hedefleri. Komutla yapılıp doğrulananları döndürür (kalanlar elle konur). */
-async function placeTargets(inst, todo, cancelled) {
+async function placeTargets(inst, todo, cancelled, opts = {}) {
   const done = new Set()
-  if (todo.length < 6 || !(await available(inst))) return done
+  const minAll = opts.min || 6
+  if (todo.length < minAll || !(await available(inst))) return done
   const cand = todo.filter((t) => cmdOk(inst, t))
-  if (cand.length < 6) return done
-  const cells = cand.map((t) => ({ x: t.pos.x, y: t.pos.y, z: t.pos.z, block: t.blockName }))
-  const n = await runBoxes(inst, boxes(cells), cancelled)
-  if (inst.log) inst.log('action', `OP inşa: ${n} komut gönderildi`)
-  for (const t of cand) {
-    const b = inst.bot.blockAt(new Vec3(t.pos.x, t.pos.y, t.pos.z))
-    if (b && b.name === t.blockName) done.add(t)
+  if (cand.length < (opts.min || 3)) return done
+  const cell = (t) => ({ x: t.pos.x, y: t.pos.y, z: t.pos.z, block: t.blockName, state: stateString(inst, t.blockName, t.props) })
+  // 1. evre: zemin/duvar gibi tam bloklar, 2. evre: desteğe yaslananlar (meşale, kapı, levha...)
+  const phase1 = cand.filter((t) => !ATTACHED.test(t.blockName))
+  const phase2 = cand.filter((t) => ATTACHED.test(t.blockName))
+  const check = (t) => { const b = inst.bot.blockAt(new Vec3(t.pos.x, t.pos.y, t.pos.z)); return !!b && b.name === t.blockName }
+  let sent = 0
+  for (const group of [phase1, phase2]) {
+    if (!group.length || (cancelled && cancelled())) continue
+    const cells = group.map(cell)
+    sent += await runBoxes(inst, boxes(cells), cancelled)
+    // olmayanlar için bir kez daha komut dene (hız sınırı/yükleme gecikmesi)
+    const missing = group.filter((t) => !check(t))
+    if (missing.length && !(cancelled && cancelled())) sent += await runBoxes(inst, boxes(missing.map(cell)), cancelled)
   }
+  if (inst.log) inst.log('action', `OP inşa: ${sent} komut gönderildi`)
+  for (const t of cand) if (check(t)) done.add(t)
   return done
 }
 

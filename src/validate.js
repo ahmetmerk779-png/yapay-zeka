@@ -37,6 +37,8 @@ const ACTION_DOCS = [
   ['protect', '{"type":"protect","target":"sender","seconds":120}', 'oyuncuyu koru: peşinden gider, ona yaklaşan düşmanlara saldırır (seconds 10-900)'],
   ['loot', '{"type":"loot","radius":16}', 'yakındaki sandık ve varillerin içindeki HER ŞEYİ envantere al (radius 4-32)'],
   ['store_all', '{"type":"store_all","radius":16}', 'envanteri yakındaki sandıklara boşalt; alet, zırh, silah, yemek, meşale ve ender pearl\'ü tutar'],
+  ['auto_farm', '{"type":"auto_farm","radius":16,"store":true}', 'SADECE kullanıcı isterse: tarlayı döngüyle işle (hasat, yeniden ek, dolunca sandığa koy, tekrar). minutes verilmezse sınırsız, yeni komutla biter'],
+  ['afk', '{"type":"afk"}', 'SADECE kullanıcı isterse: AFK kal (yerinde dur, ara sıra bak/zıpla, acıkınca ye). minutes verilmezse sınırsız, yeni komutla biter'],
   ['mine_vein', '{"type":"mine_vein","block":"iron_ore","limit":40}', 'bulduğu cevher damarının bağlı TÜM bloklarını kaz (lav/su yanındakileri atlar; limit 1-128). Tek tek mine yerine damar için bunu kullan'],
   ['auto_tool', '{"type":"auto_tool","on":true}', 'otomatik alet seçimini aç/kapat (açıkken bot her bloğu kırmadan önce en hızlı aleti kendi kuşanır; varsayılan AÇIK)'],
   ['server_commands', '{"type":"server_commands","query":"home"}', 'sunucuda kullanabildiğim komutları/eklentileri listele (query opsiyonel: komut adında ara). Bir komutu çalıştırmadan önce var mı diye bununla bak; çalıştırmak için command kullan'],
@@ -123,7 +125,7 @@ const ACTION_DOCS = [
 const TYPE_ALIASES = {
   gather: 'collect', chop: 'collect', get: 'collect',
   kill: 'attack', fight: 'attack',
-  go: 'goto', move: 'goto', commands: 'server_commands', list_commands: 'server_commands', plugins: 'server_commands', eklentiler: 'server_commands', komutlar: 'server_commands', has_command: 'server_commands', autotool: 'auto_tool', otomatik_alet: 'auto_tool', alet_sec: 'auto_tool', auto_equip: 'auto_tool', durum: 'status', rapor: 'status', report: 'status', stats: 'status', kesfet: 'explore', keşfet: 'explore', scout: 'explore', roam: 'explore', koru: 'protect', savun: 'protect', defend: 'protect', bodyguard: 'protect', escort: 'protect', yagmala: 'loot', yağmala: 'loot', loot_chests: 'loot', take_all: 'loot', depola: 'store_all', deposit_all: 'store_all', dump: 'store_all', empty_inventory: 'store_all', vein: 'mine_vein', vein_mine: 'mine_vein', damar: 'mine_vein', creative_get: 'get_item', creative_give: 'get_item', get_items: 'get_item', obtain: 'get_item', acquire: 'get_item', al: 'get_item', envantere_al: 'get_item', elytra: 'fly', elytra_fly: 'fly', glide: 'fly', fly_to: 'fly', takeoff: 'fly', uc: 'fly', uç: 'fly', havalan: 'fly', ucus: 'fly', uçuş: 'fly',
+  go: 'goto', move: 'goto', autofarm: 'auto_farm', otomatik_hasat: 'auto_farm', farm_loop: 'auto_farm', harvest_loop: 'auto_farm', afk_mode: 'afk', idle: 'afk', otomatik_tarla: 'auto_farm', commands: 'server_commands', list_commands: 'server_commands', plugins: 'server_commands', eklentiler: 'server_commands', komutlar: 'server_commands', has_command: 'server_commands', autotool: 'auto_tool', otomatik_alet: 'auto_tool', alet_sec: 'auto_tool', auto_equip: 'auto_tool', durum: 'status', rapor: 'status', report: 'status', stats: 'status', kesfet: 'explore', keşfet: 'explore', scout: 'explore', roam: 'explore', koru: 'protect', savun: 'protect', defend: 'protect', bodyguard: 'protect', escort: 'protect', yagmala: 'loot', yağmala: 'loot', loot_chests: 'loot', take_all: 'loot', depola: 'store_all', deposit_all: 'store_all', dump: 'store_all', empty_inventory: 'store_all', vein: 'mine_vein', vein_mine: 'mine_vein', damar: 'mine_vein', creative_get: 'get_item', creative_give: 'get_item', get_items: 'get_item', obtain: 'get_item', acquire: 'get_item', al: 'get_item', envantere_al: 'get_item', elytra: 'fly', elytra_fly: 'fly', glide: 'fly', fly_to: 'fly', takeoff: 'fly', uc: 'fly', uç: 'fly', havalan: 'fly', ucus: 'fly', uçuş: 'fly',
   come: 'goto_player', come_here: 'goto_player', come_to: 'goto_player',
   halt: 'stop', cancel: 'stop', idle: 'stop',
   rest: 'sleep', 
@@ -521,6 +523,8 @@ function validateActions(inst, rawActions, ctx = {}) {
       return { depth: h.int(a.depth, 10, 1, 120, 'depth') }
     },
     farm: (a) => ({ radius: h.int(a.radius, 16, 4, 48, 'radius') }),
+    auto_farm: (a) => ({ radius: h.int(a.radius, 16, 4, 48, 'radius'), minutes: a.minutes ? h.int(a.minutes, 20, 1, 1440, 'minutes') : 0, store: a.store !== false }),
+    afk: (a) => ({ minutes: a.minutes ? h.int(a.minutes, 30, 1, 1440, 'minutes') : 0 }),
     fish: (a) => ({
       seconds: h.int(a.seconds, 60, 10, 900, 'seconds'),
       catches: a.catches === undefined || a.catches === null ? null : h.int(a.catches, 5, 1, 64, 'catches'),

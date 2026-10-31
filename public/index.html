@@ -135,10 +135,10 @@
     <button class="primary" id="btn-connect">Bağlan</button>
 
     <h2>Şematikler</h2>
-    <input type="file" id="f-upload" multiple accept=".schem,.litematic,.nbt" style="display:none">
-    <button type="button" id="btn-upload" class="small">Dosya yükle (.schem .litematic .nbt)</button>
+    <input type="file" id="f-upload" multiple accept=".schem,.litematic,.litematica,.nbt" style="display:none">
+    <button type="button" id="btn-upload" class="small">Dosya yükle (.schem .litematic .litematica .nbt)</button>
     <div class="row" style="margin-top:8px">
-      <div><label>Kurulum modu</label><select id="s-mode"><option value="place">Envanterle (place)</option><option value="command">OP komutla (command)</option></select></div>
+      <div><label>Kurulum</label><div class="muted" style="padding:7px 0">Bot blokları kendi koyar</div></div>
       <div class="narrow"><label>Döndür</label><select id="s-rot"><option>0</option><option>90</option><option>180</option><option>270</option></select></div>
     </div>
     <div class="botlist" id="schemlist" style="margin-top:8px"><div class="muted">Dosya yok.</div></div>
@@ -357,7 +357,7 @@ function renderSchematics(files) {
     const act = (action) => () => { if (!selected) return toast('Önce bir bot seç.'); wsSend({ t: 'action', name: selected, action }) }
     btns.append(
       mk('Bilgi', act({ type: 'schematic_info', file: f.name })),
-      mk('Kur', () => { if (!selected) return toast('Önce bir bot seç.'); wsSend({ t: 'action', name: selected, action: { type: 'schematic', file: f.name, mode: $('#s-mode').value, rotate: Number($('#s-rot').value) } }) }),
+      mk('Kur', () => { if (!selected) return toast('Önce bir bot seç.'); wsSend({ t: 'action', name: selected, action: { type: 'schematic', file: f.name, rotate: Number($('#s-rot').value) } }) }),
       mk('Sil', () => { if (confirm(f.name + ' silinsin mi?')) wsSend({ t: 'delete_schematic', file: f.name }) }, 'danger'))
     d.append(nm, meta, btns); el.appendChild(d)
   })
@@ -418,4 +418,4 @@ function connectWS() {
 loadForm(); connectWS()
 </script>
 </body>
-                                                    </html>
+</html>

@@ -1,6 +1,6 @@
 'use strict'
 // Web panel sunucusu: statik sayfa + WebSocket ile bot yönetimi.
-// Render uyumlu hale getirilmiştir.
+// Varsayılan olarak sadece bu bilgisayardan erişilir (127.0.0.1).
 
 const http = require('http')
 const fs = require('fs')
@@ -10,10 +10,8 @@ const { BotInstance } = require('./src/bot-instance')
 const ai = require('./src/ai')
 const Sch = require('./src/schematic')
 
-// Render'ın atadığı PORT ve HOST değerlerini öncelikli olacak şekilde güncelledik[cite: 1]
-const PORT = parseInt(process.env.PORT || process.env.PANEL_PORT || '3000')
-const HOST = process.env.HOST || process.env.PANEL_HOST || '0.0.0.0'
-
+const PORT = parseInt(process.env.PANEL_PORT || '3000')
+const HOST = process.env.PANEL_HOST || '127.0.0.1'
 const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'
 const ENV_KEY = process.env.GROQ_API_KEY || ''
 
@@ -23,32 +21,51 @@ process.on('uncaughtException', (e) => console.error('[!] Beklenmeyen hata:', e 
 const bots = new Map()
 
 const server = http.createServer((req, res) => {
+  // Sağlık kontrolü: UptimeRobot gibi bir izleyici ya da kendi kendine ping bunu çağırır (Render ücretsiz planı uyumasın)
+  if (req.method === 'GET' && (req.url === '/health' || req.url === '/ping')) {
+    res.writeHead(200, { 'Content-Type': 'text/plain' }); res.end('ok'); return
+  }
   // Şematik yükleme: POST /upload?name=ev.schem  (ham ikili gövde)
   if (req.method === 'POST' && req.url.startsWith('/upload')) {
     const name = new URL(req.url, 'http://x').searchParams.get('name') || ''
-    const chunks = []
+    // Dosya RAM'e alınmadan doğrudan diske akar (2 GB'a kadar). Önce geçici dosyaya yazılır, bitince asıl adına taşınır.
+    let safe
+    try { safe = Sch.sanitizeName(name); Sch.ensureDir() } catch (e) { res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: e.message })); return }
+    const finalPath = path.join(Sch.SCHEM_DIR, safe)
+    const tmpPath = `${finalPath}.part`
+    const out = fs.createWriteStream(tmpPath)
     let size = 0
     let aborted = false
-    req.on('data', (c) => {
-      size += c.length
-      if (size > Sch.MAX_FILE_BYTES && !aborted) {
-        aborted = true
-        res.writeHead(413, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'dosya 20 MB sınırını aşıyor' }))
-        req.destroy()
-        return
-      }
-      if (!aborted) chunks.push(c)
-    })
-    req.on('end', async () => {
+    const fail = (code, msg) => {
       if (aborted) return
-      try {
-        const saved = Sch.saveFile(name, Buffer.concat(chunks))
-        try { await Sch.load(saved) } catch (e) { Sch.deleteFile(saved); throw e }   // geçerli şematik değilse sil
-        broadcast({ t: 'schematics', files: Sch.listFiles() })
-        res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, name: saved }))
-      } catch (e) {
-        res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: e.message }))
-      }
+      aborted = true
+      try { out.destroy() } catch (e) { /* kapalı */ }
+      try { fs.unlinkSync(tmpPath) } catch (e) { /* yok */ }
+      if (!res.headersSent) { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: msg })) }
+    }
+    req.on('data', (c) => {
+      if (aborted) return
+      size += c.length
+      if (size > Sch.MAX_FILE_BYTES) { fail(413, `dosya ${Sch.fmtBytes(Sch.MAX_FILE_BYTES)} sınırını aşıyor`); req.destroy(); return }
+      if (!out.write(c)) { req.pause(); out.once('drain', () => req.resume()) }   // diske yazma yavaşsa yüklemeyi yavaşlat
+    })
+    req.on('error', () => fail(400, 'yükleme kesildi'))
+    req.on('end', () => {
+      if (aborted) return
+      out.end(async () => {
+        try {
+          fs.renameSync(tmpPath, finalPath)
+          // Küçük/orta dosyalar doğrulanır; çok büyükler (bellekte açılamaz) doğrulanmadan saklanır
+          let note = ''
+          if (size <= Sch.MAX_LOAD_BYTES) {
+            try { await Sch.load(safe) } catch (e) { Sch.deleteFile(safe); throw e }
+          } else note = `dosya ${Sch.fmtBytes(size)}: saklandı ama doğrulanamadı ve bu sunucuda kurulamayabilir (bellek sınırı ${Sch.fmtBytes(Sch.MAX_LOAD_BYTES)})`
+          broadcast({ t: 'schematics', files: Sch.listFiles() })
+          res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, name: safe, note }))
+        } catch (e) {
+          res.writeHead(400, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: e.message }))
+        }
+      })
     })
     return
   }
@@ -188,6 +205,13 @@ wss.on('connection', (ws) => {
     try { await handle(ws, msg) } catch (e) { send(ws, { t: 'error', error: e.message }) }
   })
 })
+
+// Render ücretsiz planı ~15 dk dış istek gelmezse uygulamayı uyutur ve bot düşer. Kendi adresine düzenli istek at.
+if (process.env.RENDER_EXTERNAL_URL && process.env.KEEPALIVE !== '0' && typeof fetch === 'function') {
+  const url = `${process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '')}/health`
+  setInterval(() => { fetch(url).catch(() => { /* önemsiz */ }) }, 4 * 60 * 1000).unref()
+  console.log(`Uyutma koruması açık: ${url} adresine 4 dakikada bir istek atılacak`)
+}
 
 server.listen(PORT, HOST, () => {
   console.log(`Panel hazır: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`)

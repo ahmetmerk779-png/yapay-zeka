@@ -7,7 +7,7 @@ const path = require('path')
 const nbt = require('prismarine-nbt')
 
 const SCHEM_DIR = process.env.SCHEMATIC_DIR || path.join(__dirname, '..', 'schematics')
-const EXTS = ['.schem', '.litematic', '.nbt', '.schematic']
+const EXTS = ['.schem', '.litematic', '.litematica', '.nbt', '.schematic']   // .litematica: bazı sürümlerin/kullanıcıların verdiği ad, .litematic ile aynı biçim
 // Yükleme sınırı 2 GB (SCHEM_MAX_BYTES ile değiştirilebilir). Dosya diske AKARAK yazılır, RAM'e alınmaz.
 // Ama bir şematiği KURMAK için dosyanın belleğe okunması gerekir: MAX_LOAD_BYTES üstü dosyalar saklanır ama yüklenemez.
 const MAX_FILE_BYTES = Number(process.env.SCHEM_MAX_BYTES) || 2 * 1024 * 1024 * 1024
@@ -24,7 +24,8 @@ const FACING_CW = { north: 'east', east: 'south', south: 'west', west: 'north' }
 function ensureDir() { fs.mkdirSync(SCHEM_DIR, { recursive: true }) }
 
 function sanitizeName(name) {
-  const base = path.basename(String(name || '')).replace(/[^\w.\- ()]/g, '_')
+  let base = path.basename(String(name || '')).replace(/[^\w.\- ()]/g, '_')
+  if (/\.litematica$/i.test(base)) base = base.replace(/\.litematica$/i, '.litematic')
   const ext = path.extname(base).toLowerCase()
   if (!EXTS.includes(ext)) throw new Error(`desteklenmeyen uzantı "${ext}". Desteklenenler: ${EXTS.join(', ')}`)
   if (base.length < 3 || base.length > 100) throw new Error('dosya adı çok kısa/uzun')
@@ -39,17 +40,37 @@ function listFiles() {
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-// "ev", "Ev.schem", "EV.SCHEM" gibi girdileri gerçek dosyaya eşle
+// "ev", "Ev.schem", "EV.SCHEM", "buz pisti" gibi girdileri gerçek dosyaya eşle (aksan/boşluk/altçizgi önemsiz)
+const norm = (x) => String(x || '').toLowerCase().replace(/ı/g, 'i').replace(/ş/g, 's').replace(/ğ/g, 'g').replace(/ü/g, 'u').replace(/ö/g, 'o').replace(/ç/g, 'c').replace(/[^a-z0-9]/g, '')
+const GENERIC = new Set(['litematica', 'litematic', 'schematic', 'schem', 'sematik', 'sematigi', 'sema', 'dosya', 'file', 'yukledigim', 'son', 'bu', 'su'])
 function resolveFile(input) {
-  const files = listFiles().map((f) => f.name)
-  const q = String(input || '').trim().toLowerCase()
-  if (!q) return null
-  const exact = files.find((f) => f.toLowerCase() === q)
+  const list = listFiles()
+  const files = list.map((f) => f.name)
+  const raw = String(input || '').trim().toLowerCase()
+  if (!raw) return files.length === 1 ? files[0] : null
+  const exact = files.find((f) => f.toLowerCase() === raw)
   if (exact) return exact
-  const noExt = files.filter((f) => path.basename(f, path.extname(f)).toLowerCase() === q)
-  if (noExt.length === 1) return noExt[0]
-  const part = files.filter((f) => f.toLowerCase().includes(q))
-  return part.length === 1 ? part[0] : null
+  const stem = (f) => norm(path.basename(f, path.extname(f)))
+  const q = norm(raw.replace(/\.(schem|litematic|litematica|nbt|schematic)$/, ''))
+  const newest = (arr) => arr.map((f) => ({ f, t: fs.statSync(path.join(SCHEM_DIR, f)).mtimeMs })).sort((a, b) => b.t - a.t)[0].f
+  if (q) {
+    const eq = files.filter((f) => stem(f) === q)
+    if (eq.length === 1) return eq[0]
+    if (eq.length > 1) return newest(eq)
+    const part = files.filter((f) => stem(f).includes(q) || (stem(f).length >= 4 && q.includes(stem(f))))
+    if (part.length === 1) return part[0]
+    if (part.length > 1) return newest(part)
+    // sözcük sözcük: "harita şematiği" -> adında "harita" geçen dosya
+    const words = raw.split(/[^a-z0-9ıüöşçğ]+/i).map(norm).filter((w) => w.length >= 3 && !GENERIC.has(w))
+    if (words.length) {
+      const hit = files.filter((f) => words.some((w) => stem(f).includes(w)))
+      if (hit.length === 1) return hit[0]
+      if (hit.length > 1) return newest(hit)
+    }
+  }
+  // "litematica", "şematik" gibi genel bir ad verildiyse: tek dosya varsa onu, yoksa en son yükleneni al
+  if (GENERIC.has(q) || !q) return files.length ? (files.length === 1 ? files[0] : newest(files)) : null
+  return null
 }
 
 function saveFile(name, buffer) {
@@ -185,7 +206,7 @@ async function parseBuffer(buffer, ext) {
   try { parsed = (await nbt.parse(buffer)).parsed } catch (e) { throw new Error(`dosya okunamadı (bozuk ya da NBT değil): ${e.message}`) }
   const d = nbt.simplify(parsed)
   let out
-  if (ext === '.litematic') out = parseLitematic(d)
+  if (ext === '.litematic' || ext === '.litematica') out = parseLitematic(d)
   else if (ext === '.schem') out = parseSponge(d)
   else if (ext === '.nbt') out = parseStructureNbt(d)
   else throw new Error('Eski .schematic biçimi desteklenmiyor. WorldEdit/Litematica ile .schem ya da .litematic olarak dışa aktar.')

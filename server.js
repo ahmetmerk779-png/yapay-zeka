@@ -10,8 +10,9 @@ const { BotInstance } = require('./src/bot-instance')
 const ai = require('./src/ai')
 const Sch = require('./src/schematic')
 
-const PORT = parseInt(process.env.PANEL_PORT || '3000')
-const HOST = process.env.PANEL_HOST || '127.0.0.1'
+const PORT = parseInt(process.env.PANEL_PORT || process.env.PORT || '3000')
+// Render/Railway gibi barındırıcılar PORT verir ve 0.0.0.0 ister; yerelde yine sadece bu bilgisayardan erişilir
+const HOST = process.env.PANEL_HOST || ((process.env.PORT || process.env.RENDER) ? '0.0.0.0' : '127.0.0.1')
 const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'
 const ENV_KEY = process.env.GROQ_API_KEY || ''
 

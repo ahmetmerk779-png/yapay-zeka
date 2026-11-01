@@ -338,7 +338,9 @@ const SAME_AS_LOOK = /(_stairs|_door|_fence_gate|_bed)$/
 const FACES_PLAYER = /(furnace|smoker|chest|barrel|dispenser|dropper|observer|piston|repeater|comparator|lectern|loom|stonecutter|glazed_terracotta|carved_pumpkin|jack_o_lantern)$/
 const WALL_MOUNT = /^(torch|soul_torch|redstone_torch|wall_torch|soul_wall_torch|redstone_wall_torch|ladder|lever|tripwire_hook|.*_wall_(sign|banner|head|skull|hanging_sign)|.*_button)$/
 
+const NO_HINTS = Object.freeze({})
 function hintsFor(name, props = {}) {
+  if (!props || (!props.facing && !props.face && !props.half && !props.type && !props.delay && !props.mode && !props.axis)) return NO_HINTS
   const h = {}
   const f = props.facing
   if (f && DIR_VEC[f]) {
@@ -2300,9 +2302,33 @@ async function schematic(inst, a, { cancelled }) {
     else if (/_slab$/.test(b.name) && b.props.type === 'double') kind = 'double'
     targets.push({ pos, item: it.item, blockName: b.name, kind, props: b.props, hints: hintsFor(b.name, b.props) })
   }
+  s.blocks = null   // ham liste artık gerekmiyor: belleği bırak
+  // Bellek koruması: ücretsiz barındırıcıda (512 MB) çok büyük yapı sunucuyu çökertir ve bot listeden düşer
+  const limitMb = Number(process.env.MEM_LIMIT_MB) || 470
+  const estMb = Math.round(targets.length * 0.0006)   // blok başına ~600 bayt (hedef + konum + komut hücresi)
+  const rssMb = Math.round(process.memoryUsage().rss / 1048576)
+  inst.log('info', `Şematik bellek: şu an ${rssMb} MB, tahmini +${estMb} MB, sınır ${limitMb} MB`)
+  if (rssMb + estMb > limitMb) {
+    return fail(`şematik ${targets.length} blok; kurmak için ~${estMb} MB bellek lazım ama sunucuda ${rssMb}/${limitMb} MB dolu. Kurarsam sunucu çöker. Şematiği daha küçük parçalara böl, ücretli plana geç ya da MEM_LIMIT_MB değerini artır`)
+  }
   let cleared = 0
   if (a.withAir) cleared = await clearRegion(inst, origin, s.size, keep, cancelled)
-  const stats = await placeMany(inst, targets, { cancelled, partial: a.partial, label: 'şematik' })
+  // Parça parça kur (alt katmanlardan yukarı): her parçadan sonra bellek boşalır, çökme riski azalır
+  const CH = Number(process.env.SCHEM_CHUNK) || 25000
+  const total = targets.length
+  const stats = { total: 0, placed: 0, failed: 0, noitem: 0, already: 0, scaffolds: 0, unreachable: 0, cancelled: false, blocked: null, viaCommand: 0, substituted: 0, wrongState: 0 }
+  let doneN = 0
+  while (targets.length && !cancelled()) {
+    const part = targets.splice(0, CH)
+    const st = await placeMany(inst, part, { cancelled, partial: a.partial, label: `şematik ${doneN}/${total}` })
+    doneN += part.length
+    for (const k of ['total', 'placed', 'failed', 'noitem', 'already', 'scaffolds', 'unreachable', 'viaCommand', 'substituted', 'wrongState']) stats[k] += st[k] || 0
+    if (st.blocked) { stats.blocked = st.blocked; break }
+    if (st.cancelled) { stats.cancelled = true; break }
+    if (targets.length) inst.log('info', `Şematik: ${doneN}/${total} blok işlendi, sıradaki parça...`)
+    await sleep(300)
+  }
+  if (cancelled()) stats.cancelled = true
   const res = summarizeBuild(stats)
   const extra = [cleared ? `${cleared} blok temizledim` : '', unknown ? `${unknown} blok desteklenmeyen türde olduğu için atlandı` : ''].filter(Boolean).join(', ')
   return { ...res, msg: extra ? `${res.msg} (${extra})` : res.msg }

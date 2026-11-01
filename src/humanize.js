@@ -20,13 +20,19 @@ function install(inst) {
     last[kind] = Math.max(now, due)
     if (wait > 0) await sleep(wait)
   }
-  const wrapAsync = (name, kind, min, max) => {
+  const wrapAsync = (name, kind, min, max, onOk) => {
     const orig = bot[name]
     if (typeof orig !== 'function') return
-    bot[name] = async function (...args) { await space(kind, min, max); return orig.apply(bot, args) }
+    bot[name] = async function (...args) {
+      await space(kind, min, max)
+      const r = await orig.apply(bot, args)
+      if (onOk) { try { onOk() } catch (e) { /* sayaç */ } }
+      return r
+    }
   }
-  wrapAsync('placeBlock', 'place', 120, 260)
-  wrapAsync('_placeBlockWithOptions', 'place', 120, 260)
+  const countPlace = () => { if (inst.stats) inst.stats.placed++ }
+  wrapAsync('placeBlock', 'place', 120, 260, countPlace)
+  wrapAsync('_placeBlockWithOptions', 'place', 120, 260, countPlace)
   wrapAsync('activateBlock', 'use', 100, 240)
   wrapAsync('equip', 'equip', 80, 190)
 

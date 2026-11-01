@@ -66,6 +66,9 @@ class BotInstance {
     this.ready = false
     this.mode = 'idle'            // idle | busy | follow | guard | flee
     this.activity = 'boşta'
+    this.stats = { dug: 0, placed: 0, deaths: 0, actions: 0, fails: 0, aiCalls: 0, kicks: 0, since: Date.now() }
+    this.actionLog = []
+    this.curPlan = []
     this.guardPos = null
     this.guardRadius = 16
     this.homes = {}
@@ -131,7 +134,49 @@ class BotInstance {
       inventory: Object.entries(inv).map(([name, count]) => ({ name, count })),
       players, hostiles, homes: Object.fromEntries(Object.entries(this.homes).map(([k, v]) => [k, [v.x, v.y, v.z]])),
       version: b.version, aiOn: !!this.cfg.groqKey,
+      ...this.extraState(b, p),
     }
+  }
+
+  // Panel için ayrıntılı veri (envanter ızgarası, radar, zırh, plan, istatistik...). Hata verirse sessizce atlanır.
+  extraState(b, p) {
+    try {
+      const dur = (it) => (it && it.maxDurability ? Math.max(0, Math.round((1 - (it.durabilityUsed || 0) / it.maxDurability) * 100)) : null)
+      const slot = (it) => (it ? { name: it.name, count: it.count, dur: dur(it) } : null)
+      const slots = []
+      for (let i = 9; i <= 44; i++) slots.push(slot(b.inventory.slots[i]))
+      const armor = [5, 6, 7, 8].map((i) => slot(b.inventory.slots[i]))
+      const ents = []
+      for (const e of Object.values(b.entities)) {
+        if (e === b.entity || !e.position) continue
+        const dx = e.position.x - p.x
+        const dz = e.position.z - p.z
+        if (Math.abs(dx) > 32 || Math.abs(dz) > 32) continue
+        let kind = null
+        if (e.type === 'player') kind = 'player'
+        else if (e.name === 'item') kind = 'item'
+        else if (this.isHostile(e)) kind = 'hostile'
+        else if (['mob', 'animal', 'passive', 'ambient', 'living'].includes(e.type)) kind = 'passive'
+        if (!kind) continue
+        ents.push({ k: kind, x: Math.round(dx * 10) / 10, z: Math.round(dz * 10) / 10, n: e.username || e.name || '' })
+        if (ents.length >= 80) break
+      }
+      let biome = null
+      let tps = null
+      try { const blk = b.blockAt(p); biome = blk && blk.biome ? blk.biome.name : null } catch (e) { /* */ }
+      try { if (typeof b.getTps === 'function') tps = Math.round(b.getTps() * 10) / 10 } catch (e) { /* */ }
+      let mem = null
+      try { mem = this.mem ? this.mem.stats() : null } catch (e) { /* */ }
+      return {
+        yaw: b.entity.yaw, slots, armor, offhand: slot(b.inventory.slots[45]), heldSlot: b.quickBarSlot,
+        xpProgress: b.experience ? Math.round((b.experience.progress || 0) * 100) : 0,
+        oxygen: b.oxygenLevel, ping: b.player ? b.player.ping : null, tps, biome,
+        entities: ents, online: Object.keys(b.players).length,
+        uptime: this.readyAt ? Date.now() - this.readyAt : 0,
+        stats: this.stats, history: this.actionLog.slice(-15).reverse(), plan: this.curPlan,
+        mem, retry: this.retry || 0, plugins: this.plugins ? this.plugins().slice(0, 12) : [],
+      }
+    } catch (e) { return {} }
   }
 
   // ------------------------------------------------------------ yaşam döngüsü
@@ -316,6 +361,8 @@ class BotInstance {
           if (drift > 2500) this.log('warn', `Sunucu ${Math.round(drift / 1000)} sn takıldı (CPU/bellek yetersiz olabilir): bağlantı kopması riski. Ağır işlem (büyük yapı/arama) ya da Render ücretsiz plan sınırı olabilir.`)
         }, 1000))
       }
+      try { bot.on('diggingCompleted', () => { this.stats.dug++ }) } catch (e) { /* */ }
+      this.readyAt = Date.now()
       try { require('./reflex').install(this) } catch (e) { this.log('warn', 'reflex yüklenemedi: ' + e.message) }
       this.timers.push(setInterval(() => this.emit('state', { state: this.getState() }), 1500))
     })
@@ -349,11 +396,13 @@ class BotInstance {
       this.mode = 'idle'
       this.activity = 'boşta'
       this.log('warn', 'Öldü.')
+    try { this.stats.deaths++ } catch (e) { /* */ }
     })
     bot.on('respawn', () => this.log('info', 'Yeniden doğdu.'))
     bot.on('kicked', (r) => {
       const text = typeof r === 'string' ? r : JSON.stringify(r)
       this.log('error', `Sunucudan atıldı: ${text}`)
+      try { this.stats.kicks++ } catch (e) { /* */ }
       const t = text.toLowerCase()
       this.lastKick = t
       if (/banned|ban\b|yasaklan/.test(t)) { this.log('error', 'BAN algılandı: otomatik yeniden bağlanma durduruldu (tekrar denemek durumu kötüleştirir).'); this.banned = true }
@@ -633,6 +682,7 @@ class BotInstance {
     let messages = [{ role: 'system', content: system }, ...hist]
     let lastPlan = null
     for (let attempt = 0; attempt < 2; attempt++) {
+      try { this.stats.aiCalls++ } catch (e) { /* */ }
       const text = await ai.chat({ apiKey: this.cfg.groqKey, model: this.cfg.model, messages, json: true, maxTokens: 900, temperature: 0.2 })
       const ex = ai.extractJson(text)
       let problems = []
@@ -867,9 +917,12 @@ class BotInstance {
     else task = null
     this.task = task
 
+    this.curPlan = actions.map((a) => ({ type: a.type, st: 'bekliyor' }))
     for (let i = 0; i < actions.length; i++) {
       const a = actions[i]
       if (cancelled()) return
+      if (this.curPlan[i]) this.curPlan[i].st = 'çalışıyor'
+      const tStart = Date.now()
       this.activity = JSON.stringify(simplify(a))
       this.curType = a.type
       this.log('action', `▶ ${this.activity}`)
@@ -882,6 +935,12 @@ class BotInstance {
       if (cancelled()) return
       if (!this.ready) return   // bağlantı koptu: işi diskte tut, burada bitirme/yeniden planlama yapma
       this.log(r.ok ? 'action' : 'warn', `${r.ok ? '✔' : '✖'} ${a.type}: ${r.msg}`)
+      try {
+        if (this.curPlan[i]) this.curPlan[i].st = r.ok ? 'bitti' : 'hata'
+        this.stats.actions++; if (!r.ok) this.stats.fails++
+        this.actionLog.push({ ts: Date.now(), type: a.type, ok: !!r.ok, ms: Date.now() - tStart, msg: String(r.msg || '').slice(0, 140) })
+        if (this.actionLog.length > 30) this.actionLog.shift()
+      } catch (e) { /* önemsiz */ }
       results.push({ type: a.type, ok: r.ok, msg: r.msg, data: r.data })
       if (r.ok && task) { task.done = task.offset + i + 1; this.saveTask({ raw: task.raw, sender: task.sender || sender, text: task.text, done: task.done, tries: task.tries || 0, t: Date.now() }) }
       if (!r.ok) break

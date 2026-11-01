@@ -13,7 +13,7 @@ const EXTS = ['.schem', '.litematic', '.litematica', '.nbt', '.schematic']   // 
 const MAX_FILE_BYTES = Number(process.env.SCHEM_MAX_BYTES) || 2 * 1024 * 1024 * 1024
 const MAX_LOAD_BYTES = Number(process.env.SCHEM_LOAD_MAX_BYTES) || 256 * 1024 * 1024
 const fmtBytes = (n) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : `${Math.round(n / 1024 ** 2)} MB`)
-const MAX_BLOCKS = Number(process.env.SCHEM_MAX_BLOCKS) || 2000000
+const MAX_BLOCKS = Number(process.env.SCHEM_MAX_BLOCKS) || 800000
 
 const SKIP_BLOCKS = new Set(['air', 'cave_air', 'void_air', 'structure_void', 'jigsaw', 'structure_block', 'barrier', 'light'])
 const NO_ITEM = new Set(['fire', 'soul_fire', 'moving_piston', 'piston_head', 'nether_portal', 'end_portal', 'end_gateway', 'bubble_column', 'frosted_ice', 'tall_seagrass_top'])
@@ -159,46 +159,50 @@ function longToBig(pair) {
 
 function parseLitematic(d) {
   if (!d.Regions) throw new Error('litematic Regions alanı yok')
-  const all = []
+  // Bellek dostu: hava blokları hiç nesneye çevrilmez, bit okuma BigInt'siz (büyük dosyada hem hızlı hem az bellek)
+  const blocks = []
+  let minX = Infinity, minY = Infinity, minZ = Infinity, maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity
   for (const region of Object.values(d.Regions)) {
     const sx = region.Size.x, sy = region.Size.y, sz = region.Size.z
     const ax = Math.abs(sx), ay = Math.abs(sy), az = Math.abs(sz)
     const ox = region.Position.x + (sx < 0 ? sx + 1 : 0)
     const oy = region.Position.y + (sy < 0 ? sy + 1 : 0)
     const oz = region.Position.z + (sz < 0 ? sz + 1 : 0)
+    minX = Math.min(minX, ox); minY = Math.min(minY, oy); minZ = Math.min(minZ, oz)
+    maxX = Math.max(maxX, ox + ax - 1); maxY = Math.max(maxY, oy + ay - 1); maxZ = Math.max(maxZ, oz + az - 1)
     const pal = region.BlockStatePalette.map((p) => {
       const props = {}
       if (p.Properties) for (const [k, v] of Object.entries(p.Properties)) props[k] = String(v)
       return { name: String(p.Name).replace(/^minecraft:/, ''), props }
     })
+    const skip = pal.map((p) => SKIP_BLOCKS.has(p.name))
     const bits = Math.max(2, Math.ceil(Math.log2(pal.length)))
-    const mask = (1n << BigInt(bits)) - 1n
-    const longs = region.BlockStates.map(longToBig)
-    for (let y = 0; y < ay; y++) {
-      for (let z = 0; z < az; z++) {
-        for (let x = 0; x < ax; x++) {
-          const i = (y * az + z) * ax + x
-          const start = i * bits
-          const idx = Math.floor(start / 64)
-          const off = BigInt(start % 64)
-          let v = longs[idx] >> off
-          if (Number(off) + bits > 64 && longs[idx + 1] !== undefined) v |= longs[idx + 1] << (64n - off)
-          const p = pal[Number(v & mask)]
-          if (p) all.push({ x: ox + x, y: oy + y, z: oz + z, name: p.name, props: p.props })
-        }
-      }
+    const mask = bits >= 32 ? 0xffffffff : (2 ** bits) - 1
+    const L = region.BlockStates
+    const words = new Uint32Array(L.length * 2)
+    for (let i = 0; i < L.length; i++) { words[2 * i] = L[i][1] >>> 0; words[2 * i + 1] = L[i][0] >>> 0 }   // [hi, lo]
+    const total = ax * ay * az
+    const layer = ax * az
+    for (let i = 0; i < total; i++) {
+      const start = i * bits
+      const w = Math.floor(start / 32)
+      const sh = start - w * 32
+      let v = words[w] >>> sh
+      if (sh + bits > 32) v = (v | (words[w + 1] << (32 - sh))) >>> 0
+      v = (v & mask) >>> 0
+      const p = pal[v]
+      if (!p || skip[v]) continue
+      const y = Math.floor(i / layer)
+      const rem = i - y * layer
+      const z = Math.floor(rem / ax)
+      const x = rem - z * ax
+      pushBlock(blocks, ox + x, oy + y, oz + z, p.name, p.props)
     }
   }
-  if (!all.length) throw new Error('litematic boş')
-  const minX = Math.min(...all.map((b) => b.x)), minY = Math.min(...all.map((b) => b.y)), minZ = Math.min(...all.map((b) => b.z))
-  const blocks = []
-  let maxX = 0, maxY = 0, maxZ = 0
-  for (const b of all) {
-    const x = b.x - minX, y = b.y - minY, z = b.z - minZ
-    maxX = Math.max(maxX, x); maxY = Math.max(maxY, y); maxZ = Math.max(maxZ, z)
-    pushBlock(blocks, x, y, z, b.name, b.props)
-  }
-  return { size: { x: maxX + 1, y: maxY + 1, z: maxZ + 1 }, blocks }
+  if (!isFinite(minX)) throw new Error('litematic boş')
+  for (const b of blocks) { b.x -= minX; b.y -= minY; b.z -= minZ }
+  if (!blocks.length) throw new Error('litematic boş')
+  return { size: { x: maxX - minX + 1, y: maxY - minY + 1, z: maxZ - minZ + 1 }, blocks }
 }
 
 async function parseBuffer(buffer, ext) {
@@ -321,7 +325,7 @@ function describe(schem, mcData, haveFn) {
 }
 
 module.exports = {
-  SCHEM_DIR, EXTS, MAX_FILE_BYTES, MAX_LOAD_BYTES, fmtBytes, listFiles, resolveFile, saveFile, deleteFile, sanitizeName, ensureDir,
+  parseLitematic, SCHEM_DIR, EXTS, MAX_FILE_BYTES, MAX_LOAD_BYTES, fmtBytes, listFiles, resolveFile, saveFile, deleteFile, sanitizeName, ensureDir,
   load, parseBuffer, parseBlockString, rotate, rotateProps, materials, missingMaterials, blockToItem,
   describe,
 }

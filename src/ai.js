@@ -21,10 +21,20 @@ async function request(path, { apiKey, method = 'GET', body, timeoutMs = 30000 }
   }
 }
 
+// Groq/Cloudflare bazen JSON yerine HTML hata sayfası döndürür: okunur bir hata ver
+async function readJson(res) {
+  const text = await res.text()
+  try { return JSON.parse(text) } catch (e) {
+    const head = text.trim().slice(0, 60).replace(/\s+/g, ' ')
+    if (/^<(!doctype|html)/i.test(head)) throw new Error(`Groq JSON yerine HTML sayfası döndürdü (HTTP ${res.status}). Servis geçici olarak kapalı ya da isteğin engellendi; birkaç dakika sonra tekrar dene`)
+    throw new Error(`Groq geçersiz yanıt verdi (HTTP ${res.status}): ${head || 'boş yanıt'}`)
+  }
+}
+
 async function listModels(apiKey) {
   const res = await request('/models', { apiKey })
   if (!res.ok) throw new Error(`Groq ${res.status}: ${(await res.text()).slice(0, 200)}`)
-  const data = await res.json()
+  const data = await readJson(res)
   return (data.data || [])
     .map((m) => m.id)
     .filter((id) => !/whisper|tts|guard|playai|orpheus|embed/i.test(id))
@@ -50,7 +60,7 @@ async function chat({ apiKey, model, messages, json = false, maxTokens = 900, te
     }
     const res = await request('/chat/completions', { apiKey, method: 'POST', body })
     if (res.ok) {
-      const data = await res.json()
+      const data = await readJson(res)
       return (data.choices && data.choices[0] && data.choices[0].message && data.choices[0].message.content) || ''
     }
     const text = await res.text()

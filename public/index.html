@@ -307,6 +307,7 @@ const fmtTime = (ts) => { const d = new Date(ts); return `${pad(d.getHours())}:$
 function wsSend(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); else toast('Panel sunucusuna bağlı değil.') }
 
 // ---------- ayarlar
+function forgetAuto(n) { try { const a = JSON.parse(localStorage.getItem('mcpanel.autobot') || 'null'); if (a && a.name === n) localStorage.removeItem('mcpanel.autobot') } catch (e) { /* */ } }
 function readForm() {
   return {
     name: $('#f-name').value.trim(), host: $('#f-host').value.trim(), port: $('#f-port').value, version: $('#f-version').value.trim() || 'auto',
@@ -365,7 +366,7 @@ function renderList() {
     const meta = document.createElement('div'); meta.className = 'meta'; meta.textContent = `${s.host}:${s.port} · ${s.version} · ${s.aiOn ? s.model : 'AI kapalı'}`
     const btns = document.createElement('div'); btns.className = 'btns'
     const mk = (txt, fn, cls = '') => { const b = document.createElement('button'); b.className = 'small ' + cls; b.textContent = txt; b.onclick = (e) => { e.stopPropagation(); fn() }; return b }
-    btns.append(mk('Yeniden bağlan', () => wsSend({ t: 'reconnect', name: n })), mk('Durdur', () => wsSend({ t: 'disconnect', name: n })), mk('Sil', () => wsSend({ t: 'remove', name: n }), 'danger'))
+    btns.append(mk('Yeniden bağlan', () => wsSend({ t: 'reconnect', name: n })), mk('Durdur', () => { forgetAuto(n); wsSend({ t: 'disconnect', name: n }) }), mk('Sil', () => { forgetAuto(n); wsSend({ t: 'remove', name: n }) }, 'danger'))
     d.append(top, meta, btns); el.appendChild(d)
   })
 }
@@ -497,7 +498,7 @@ $('#btn-man').onclick = () => {
   if (!selected) return toast('Önce bir bot seç.')
   try { wsSend({ t: 'action', name: selected, action: JSON.parse($('#man-json').value) }) } catch (e) { toast('Geçersiz JSON: ' + e.message) }
 }
-$('#btn-connect').onclick = () => { saveForm(); wsSend({ t: 'connect', cfg: readForm() }); const n = $('#f-name').value.trim(); if (n) setTimeout(() => bots[n] && select(n), 300) }
+$('#btn-connect').onclick = () => { saveForm(); try { localStorage.setItem('mcpanel.autobot', JSON.stringify(readForm())) } catch (e) { /* */ } wsSend({ t: 'connect', cfg: readForm() }); const n = $('#f-name').value.trim(); if (n) setTimeout(() => bots[n] && select(n), 300) }
 $('#btn-models').onclick = () => wsSend({ t: 'models', key: $('#f-key').value.trim() })
 
 // ---------- şematikler
@@ -548,6 +549,8 @@ function connectWS() {
         bots = {}
         m.bots.forEach((s) => { bots[s.name] = { sum: s, logs: (m.logs && m.logs[s.name]) || [], state: null } })
         if (!bots[selected]) selected = Object.keys(bots)[0] || null
+        // Sunucu çöküp yeniden başladıysa (bot listesi boş kaldıysa) panel botu kendiliğinden yeniden bağlar
+        try { const a = JSON.parse(localStorage.getItem('mcpanel.autobot') || 'null'); if (a && a.name && !bots[a.name]) { toast('Sunucu yeniden başlamış, ' + a.name + ' otomatik bağlanıyor...'); setTimeout(() => { if (!bots[a.name]) wsSend({ t: 'connect', cfg: a }) }, 2500) } } catch (e) { /* */ }
         renderSchematics(m.schematics)
         if (m.defaults) { if (m.defaults.keyFromEnv && !$('#f-key').value) $('#f-key').placeholder = 'sunucu ortamından (GROQ_API_KEY) kullanılacak' }
         renderList(); renderTerm(); renderHeader(); renderState(); break

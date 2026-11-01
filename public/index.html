@@ -53,7 +53,7 @@
   header.top { padding: 12px 18px; border-bottom: 1px solid var(--line); background: rgba(23,26,33,.7); backdrop-filter: blur(8px); display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   header.top .title { font-weight: 600; font-size: 15px; }
   .conn { margin-left: auto; font-size: 12px; color: var(--dim); display: flex; align-items: center; gap: 6px; }
-  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; padding: 12px 18px; border-bottom: 1px solid var(--line); }
   .stat { background: linear-gradient(180deg, var(--panel), #14171d); border: 1px solid var(--line); border-radius: 10px; padding: 8px 12px; min-width: 0; box-shadow: var(--shadow); }
   .stat .k { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; }
   .stat .v { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -81,6 +81,46 @@
   details { margin-top: 10px; } summary { cursor: pointer; color: var(--dim); font-size: 12px; }
   .manual { display: flex; gap: 6px; margin-top: 6px; } .manual input { flex: 1; font-family: ui-monospace, Consolas, monospace; font-size: 12px; }
   #toast { position: fixed; right: 16px; bottom: 16px; background: #3b1d1d; border: 1px solid var(--red); color: #fecaca; padding: 8px 12px; border-radius: 8px; display: none; max-width: 360px; z-index: 10; }
+
+  .badges { display: flex; gap: 6px; flex-wrap: wrap; }
+  .badge { background: var(--panel2); border: 1px solid var(--line); border-radius: 999px; padding: 2px 10px; font-size: 11.5px; color: var(--dim); white-space: nowrap; }
+  .badge b { color: var(--text); font-weight: 600; }
+  .stat .sub { font-size: 11px; color: var(--dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 2px; }
+  .stat.wide { grid-column: span 2; }
+  .bar.xp > i { background: #84cc16; } .bar.arm > i { background: #94a3b8; }
+  .bar > i { transition: width .4s ease; }
+  .mid { grid-template-columns: 1fr 340px !important; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tab { padding: 5px 11px; font-size: 12px; border-radius: 999px; color: var(--dim); }
+  .tab.on { background: linear-gradient(135deg, var(--accent), #4f46e5); color: #fff; border-color: transparent; }
+  .pane { display: none; } .pane.on { display: block; animation: fade .2s ease; }
+  @keyframes fade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+  .held { font-size: 12.5px; margin-bottom: 8px; color: var(--dim); } .held b { color: var(--yellow); }
+  .equip { display: flex; flex-direction: column; gap: 8px; }
+  .armor { display: flex; gap: 4px; align-items: center; } .armor .sep { width: 1px; height: 22px; background: var(--line); margin: 0 4px; }
+  .grid { display: grid; grid-template-columns: repeat(9, minmax(0, 1fr)); gap: 3px; flex: 1; min-width: 0; }
+  .hotbar { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .slot { position: relative; aspect-ratio: 1; min-width: 0; background: #12151b; border: 1px solid #262c38; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 15px; }
+  .grid .slot { width: 100%; height: 32px; aspect-ratio: auto; }
+  .slot.vacant { opacity: .45; } .slot.sel { border-color: var(--yellow); box-shadow: 0 0 0 2px rgba(250,204,21,.25); }
+  .slot .n { position: absolute; right: 2px; bottom: 0; font-size: 10px; font-weight: 700; color: #fff; text-shadow: 0 1px 2px #000; }
+  .slot .d { position: absolute; left: 3px; right: 3px; bottom: 2px; height: 2px; background: #2b3140; border-radius: 2px; overflow: hidden; } .slot .d i { display: block; height: 100%; }
+  .armor .slot { width: 36px; height: 36px; aspect-ratio: auto; flex: none; }
+  .stat .v { font-size: 13.5px; }
+  #radar { width: 100%; height: auto; border-radius: 12px; border: 1px solid var(--line); background: #0d1016; display: block; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11.5px; color: var(--dim); margin-top: 8px; }
+  .legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; }
+  .steps { display: flex; flex-direction: column; gap: 5px; }
+  .step { display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; font-size: 12.5px; }
+  .pill { margin-left: auto; font-size: 10.5px; padding: 1px 8px; border-radius: 999px; background: #262c38; color: var(--dim); }
+  .pill.run { background: rgba(34,211,238,.15); color: var(--cyan); } .pill.ok { background: rgba(74,222,128,.15); color: var(--green); } .pill.err { background: rgba(248,113,113,.15); color: var(--red); }
+  .hist { display: flex; flex-direction: column; gap: 5px; }
+  .h { border-left: 3px solid var(--line); padding: 3px 0 3px 9px; font-size: 12px; } .h.ok { border-color: var(--green); } .h.bad { border-color: var(--red); }
+  .h .t { font-weight: 600; } .h .m { color: var(--dim); overflow-wrap: anywhere; } .h .ms { float: right; color: var(--dim); font-size: 11px; }
+  .kv { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .kv > div { background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  .kv .k { font-size: 10.5px; color: var(--dim); text-transform: uppercase; letter-spacing: .06em; } .kv .v { font-weight: 600; font-size: 15px; }
+  .side { padding: 14px !important; }
   .empty { margin: auto; text-align: center; color: var(--dim); padding: 40px; }
   @media (max-width: 900px) {
     .app { grid-template-columns: 1fr; height: auto; } main { height: 90vh; }
@@ -158,16 +198,20 @@
     <header class="top">
       <span class="title" id="h-title">Bot seçilmedi</span>
       <span class="muted" id="h-sub"></span>
+      <span class="badges" id="h-badges"></span>
       <span class="conn"><span class="dot" id="ws-dot"></span><span id="ws-text">panel bağlanıyor...</span></span>
     </header>
 
     <div class="stats" id="stats">
-      <div class="stat"><div class="k">Can</div><div class="v" id="s-health">-</div><div class="bar"><i id="b-health"></i></div></div>
-      <div class="stat"><div class="k">Açlık</div><div class="v" id="s-food">-</div><div class="bar food"><i id="b-food"></i></div></div>
-      <div class="stat"><div class="k">Konum</div><div class="v" id="s-pos">-</div></div>
-      <div class="stat"><div class="k">Boyut / Zaman</div><div class="v" id="s-world">-</div></div>
-      <div class="stat"><div class="k">Mod</div><div class="v" id="s-mode">-</div></div>
-      <div class="stat"><div class="k">Yaptığı iş</div><div class="v" id="s-act" title="">-</div></div>
+      <div class="stat"><div class="k">❤ Can</div><div class="v" id="s-health">-</div><div class="bar"><i id="b-health"></i></div></div>
+      <div class="stat"><div class="k">🍖 Açlık</div><div class="v" id="s-food">-</div><div class="bar food"><i id="b-food"></i></div></div>
+      <div class="stat"><div class="k">✦ Seviye</div><div class="v" id="s-xp">-</div><div class="bar xp"><i id="b-xp"></i></div></div>
+      <div class="stat"><div class="k">🛡 Zırh</div><div class="v" id="s-armor">-</div><div class="bar arm"><i id="b-armor"></i></div></div>
+      <div class="stat"><div class="k">📍 Konum</div><div class="v" id="s-pos">-</div><div class="sub" id="s-biome">&nbsp;</div></div>
+      <div class="stat"><div class="k">🌍 Boyut / Zaman</div><div class="v" id="s-world">-</div></div>
+      <div class="stat"><div class="k">📶 Ping / TPS</div><div class="v" id="s-net">-</div></div>
+      <div class="stat"><div class="k">⚙ Mod</div><div class="v" id="s-mode">-</div></div>
+      <div class="stat wide"><div class="k">▶ Yaptığı iş</div><div class="v" id="s-act" title="">-</div></div>
     </div>
 
     <div class="mid">
@@ -193,21 +237,55 @@
       </div>
 
       <div class="side">
-        <h2 style="margin-top:0">Envanter</h2>
-        <div class="chips" id="inv"><span class="muted">-</span></div>
-        <h2>Oyuncular</h2>
-        <div class="chips" id="players"><span class="muted">-</span></div>
-        <h2>Yakın düşmanlar</h2>
-        <div class="chips" id="hostiles"><span class="muted">-</span></div>
-        <h2>Kayıtlı noktalar</h2>
-        <div class="chips" id="homes"><span class="muted">-</span></div>
-        <details>
-          <summary>Manuel eylem JSON'u</summary>
-          <div class="manual">
-            <input type="text" id="man-json" placeholder='{"type":"collect","block":"oak_log","count":10}'>
-            <button class="small" id="btn-man">Çalıştır</button>
+        <div class="tabs" id="tabs">
+          <button class="tab on" data-tab="inv">Envanter</button>
+          <button class="tab" data-tab="radar">Radar</button>
+          <button class="tab" data-tab="jobs">İşler</button>
+          <button class="tab" data-tab="stats">İstatistik</button>
+          <button class="tab" data-tab="places">Noktalar</button>
+        </div>
+
+        <section class="pane on" id="tab-inv">
+          <div class="held" id="held">Elinde: -</div>
+          <div class="equip">
+            <div class="armor" id="armor"></div>
+            <div class="grid" id="grid-main"></div>
           </div>
-        </details>
+          <div class="grid hotbar" id="grid-hot"></div>
+          <div class="muted" id="inv-sum" style="margin-top:8px">-</div>
+        </section>
+
+        <section class="pane" id="tab-radar">
+          <canvas id="radar" width="300" height="300"></canvas>
+          <div class="legend"><span><i style="background:#60a5fa"></i>Oyuncu</span><span><i style="background:#f87171"></i>Düşman</span><span><i style="background:#4ade80"></i>Hayvan</span><span><i style="background:#facc15"></i>Eşya</span></div>
+          <h2>Yakındakiler</h2>
+          <div class="chips" id="players"><span class="muted">-</span></div>
+          <div class="chips" id="hostiles" style="margin-top:6px"><span class="muted">-</span></div>
+        </section>
+
+        <section class="pane" id="tab-jobs">
+          <h2 style="margin-top:0">Şu anki plan</h2>
+          <div class="steps" id="plan"><span class="muted">Plan yok.</span></div>
+          <h2>Son işler</h2>
+          <div class="hist" id="hist"><span class="muted">Henüz iş yapılmadı.</span></div>
+        </section>
+
+        <section class="pane" id="tab-stats">
+          <div class="kv" id="kv"></div>
+          <h2>Sunucu eklentileri</h2>
+          <div class="chips" id="plugins"><span class="muted">-</span></div>
+        </section>
+
+        <section class="pane" id="tab-places">
+          <div class="chips" id="homes"><span class="muted">-</span></div>
+          <details>
+            <summary>Manuel eylem JSON'u</summary>
+            <div class="manual">
+              <input type="text" id="man-json" placeholder='{"type":"collect","block":"oak_log","count":10}'>
+              <button class="small" id="btn-man">Çalıştır</button>
+            </div>
+          </details>
+        </section>
       </div>
     </div>
   </main>
@@ -302,19 +380,104 @@ function chips(el, items, fmt) {
   if (!items.length) { el.innerHTML = '<span class="muted">-</span>'; return }
   items.forEach((i) => { const c = document.createElement('span'); c.className = 'chip'; c.innerHTML = ''; fmt(c, i); el.appendChild(c) })
 }
+const EMO = [
+  [/sword|axe$|mace|trident/, '⚔'], [/pickaxe/, '⛏'], [/shovel/, '🪏'], [/hoe/, '🌾'], [/bow$|crossbow/, '🏹'], [/shield/, '🛡'],
+  [/helmet|chestplate|leggings|boots|elytra|turtle_shell/, '🪖'], [/apple|bread|beef|porkchop|mutton|chicken|cod|salmon|carrot|potato|stew|cookie|melon|pie|cake|steak/, '🍖'],
+  [/_log|_wood|stem$/, '🪵'], [/planks/, '🟫'], [/stone|cobble|deepslate|andesite|diorite|granite|tuff|brick/, '▦'], [/_ore|raw_|ingot|nugget|diamond|emerald|coal|netherite|redstone|lapis|quartz/, '💎'],
+  [/bucket/, '🪣'], [/torch|lantern/, '🔦'], [/seeds|sapling|wheat|kelp|sugar/, '🌱'], [/potion|bottle/, '🧪'], [/rocket|firework/, '🎆'], [/pearl|eye/, '🔮'], [/totem/, '🗿'],
+  [/chest|barrel|shulker/, '📦'], [/bed$/, '🛏'], [/door|trapdoor|gate/, '🚪'], [/glass|ice/, '🧊'], [/dirt|grass|sand|gravel|clay|mud/, '🟤'], [/wool|carpet/, '🧶'], [/book|map|paper/, '📖'],
+]
+function itemEmoji(n) { for (const [re, e] of EMO) if (re.test(n)) return e; return '◼' }
+function itemColor(n) { let h = 0; for (const c of n) h = (h * 31 + c.charCodeAt(0)) % 360; return `hsl(${h} 45% 22%)` }
+function nice(n) { return String(n).replace(/_/g, ' ') }
+function slotEl(it, sel) {
+  const d = document.createElement('div'); d.className = 'slot' + (it ? '' : ' vacant') + (sel ? ' sel' : '')
+  if (it) {
+    d.style.background = itemColor(it.name); d.title = `${nice(it.name)} ×${it.count}` + (it.dur !== null && it.dur !== undefined ? ` · dayanıklılık %${it.dur}` : '')
+    d.textContent = itemEmoji(it.name)
+    if (it.count > 1) { const n = document.createElement('span'); n.className = 'n'; n.textContent = it.count; d.appendChild(n) }
+    if (it.dur !== null && it.dur !== undefined && it.dur < 100) { const b = document.createElement('span'); b.className = 'd'; b.innerHTML = `<i style="width:${it.dur}%;background:${it.dur > 50 ? '#4ade80' : it.dur > 20 ? '#facc15' : '#f87171'}"></i>`; d.appendChild(b) }
+  }
+  return d
+}
+function fmtDur(ms) { const s = Math.floor(ms / 1000), h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60); return h ? `${h}sa ${m}dk` : m ? `${m}dk ${s % 60}sn` : `${s}sn` }
+function drawRadar(s) {
+  const cv = $('#radar'); if (!cv) return
+  const g = cv.getContext('2d'), W = cv.width, C = W / 2, R = 32, sc = (C - 8) / R
+  g.clearRect(0, 0, W, W)
+  g.strokeStyle = '#1d2330'; g.lineWidth = 1
+  for (const r of [8, 16, 24, 32]) { g.beginPath(); g.arc(C, C, r * sc, 0, 7); g.stroke() }
+  g.beginPath(); g.moveTo(C, 6); g.lineTo(C, W - 6); g.moveTo(6, C); g.lineTo(W - 6, C); g.stroke()
+  g.fillStyle = '#4b5263'; g.font = '11px system-ui'; g.fillText('K', C - 3, 14); g.fillText('G', C - 3, W - 5); g.fillText('D', W - 12, C + 4); g.fillText('B', 4, C + 4)
+  const COL = { player: '#60a5fa', hostile: '#f87171', passive: '#4ade80', item: '#facc15' }
+  ;(s.entities || []).forEach((e) => {
+    const x = C + e.x * sc, y = C + e.z * sc
+    g.fillStyle = COL[e.k] || '#fff'; g.beginPath(); g.arc(x, y, e.k === 'item' ? 2.5 : e.k === 'player' ? 5 : 3.5, 0, 7); g.fill()
+    if (e.k === 'player' || e.k === 'hostile') { g.fillStyle = '#cbd5e1'; g.font = '10px system-ui'; g.fillText(e.n, x + 7, y + 3) }
+  })
+  const fx = -Math.sin(s.yaw || 0), fz = -Math.cos(s.yaw || 0)
+  g.save(); g.translate(C, C); g.rotate(Math.atan2(fz, fx) + Math.PI / 2)
+  g.fillStyle = '#e6e8ee'; g.beginPath(); g.moveTo(0, -9); g.lineTo(6, 7); g.lineTo(-6, 7); g.closePath(); g.fill(); g.restore()
+}
 function renderState() {
   const s = (bots[selected] && bots[selected].state) || {}
   const on = s.health !== undefined
-  $('#s-health').textContent = on ? `${s.health} / 20` : '-'; $('#b-health').style.width = on ? (s.health / 20 * 100) + '%' : '0'
-  $('#s-food').textContent = on ? `${s.food} / 20` : '-'; $('#b-food').style.width = on ? (s.food / 20 * 100) + '%' : '0'
-  $('#s-pos').textContent = on ? s.pos.join(', ') : '-'
-  $('#s-world').textContent = on ? `${(s.dimension || '').replace('minecraft:', '')} · ${s.time}${s.raining ? ' · yağmur' : ''}` : '-'
-  $('#s-mode').textContent = s.mode || '-'
-  $('#s-act').textContent = s.activity || '-'; $('#s-act').title = s.activity || ''
-  chips($('#inv'), s.inventory || [], (c, i) => { c.append(document.createTextNode(i.name + ' '), Object.assign(document.createElement('b'), { textContent: '×' + i.count })) })
-  chips($('#players'), s.players || [], (c, p) => { c.textContent = p.name + (p.dist !== null ? ` (${p.dist}m)` : '') })
-  chips($('#hostiles'), Object.entries(s.hostiles || {}), (c, [n, k]) => { c.textContent = `${n} ×${k}` })
-  chips($('#homes'), Object.entries(s.homes || {}), (c, [n, p]) => { c.textContent = `${n}: ${p.join(', ')}` })
+  const set = (id, v) => { const e = $(id); if (e) e.textContent = v }
+  set('#s-health', on ? `${s.health} / 20` : '-'); $('#b-health').style.width = on ? (s.health / 20 * 100) + '%' : '0'
+  set('#s-food', on ? `${s.food} / 20` : '-'); $('#b-food').style.width = on ? (s.food / 20 * 100) + '%' : '0'
+  set('#s-xp', on ? `Sv. ${s.xp || 0}` : '-'); $('#b-xp').style.width = on ? (s.xpProgress || 0) + '%' : '0'
+  const arm = (s.armor || []).filter(Boolean)
+  const avg = arm.length ? Math.round(arm.reduce((t, a) => t + (a.dur === null || a.dur === undefined ? 100 : a.dur), 0) / arm.length) : 0
+  set('#s-armor', on ? (arm.length ? `${arm.length}/4 · %${avg}` : 'yok') : '-'); $('#b-armor').style.width = on ? avg + '%' : '0'
+  set('#s-pos', on ? s.pos.join(', ') : '-'); set('#s-biome', on ? (s.biome ? nice(String(s.biome)) : ' ') : ' ')
+  set('#s-world', on ? `${(s.dimension || '').replace('minecraft:', '').replace('overworld', 'ana dünya').replace('the_nether', 'nether').replace('the_end', 'end')} · ${s.time}${s.raining ? ' ☔' : ''}` : '-')
+  set('#s-net', on ? `${s.ping ?? '?'}ms · ${s.tps ?? '?'}tps` : '-')
+  set('#s-mode', s.mode || '-'); set('#s-act', s.activity || '-'); $('#s-act').title = s.activity || ''
+  // üst rozetler
+  const bd = $('#h-badges'); bd.textContent = ''
+  if (on) [['sürüm', s.version], ['oyun modu', s.gamemode], ['çevrimiçi', s.online], ['süre', fmtDur(s.uptime || 0)], ['yapay zeka', s.aiOn ? 'açık' : 'kapalı']].forEach(([k, v]) => { const e = document.createElement('span'); e.className = 'badge'; e.innerHTML = `${k}: <b></b>`; e.querySelector('b').textContent = v ?? '?'; bd.appendChild(e) })
+  // envanter ızgarası
+  const sl = s.slots || []
+  const gm = $('#grid-main'), gh = $('#grid-hot'); gm.textContent = ''; gh.textContent = ''
+  for (let i = 0; i < 27; i++) gm.appendChild(slotEl(sl[i], false))
+  for (let i = 27; i < 36; i++) gh.appendChild(slotEl(sl[i], s.heldSlot === i - 27))
+  const ar = $('#armor'); ar.textContent = ''; (s.armor || [null, null, null, null]).forEach((a) => ar.appendChild(slotEl(a, false))); { const sp = document.createElement('i'); sp.className = 'sep'; ar.appendChild(sp) } ar.appendChild(slotEl(s.offhand || null, false))
+  $('#held').innerHTML = `Elinde: <b></b>`; $('#held b').textContent = s.held ? nice(s.held) : 'boş'
+  const inv = s.inventory || []; const total = inv.reduce((t, i) => t + i.count, 0)
+  set('#inv-sum', on ? `${inv.length} çeşit · ${total} eşya · ${36 - sl.filter(Boolean).length} boş slot` : '-')
+  // radar
+  if (on) drawRadar(s)
+  chips($('#players'), s.players || [], (c, p) => { c.textContent = '👤 ' + p.name + (p.dist !== null ? ` (${p.dist}m)` : '') })
+  chips($('#hostiles'), Object.entries(s.hostiles || {}), (c, [n, k]) => { c.textContent = `👹 ${n} ×${k}` })
+  // plan + geçmiş
+  const pl = $('#plan'); pl.textContent = ''
+  if (!(s.plan || []).length) pl.innerHTML = '<span class="muted">Plan yok.</span>'
+  ;(s.plan || []).forEach((p, i) => { const d = document.createElement('div'); d.className = 'step'; d.textContent = `${i + 1}. ${p.type}`; const pill = document.createElement('span'); pill.className = 'pill ' + (p.st === 'çalışıyor' ? 'run' : p.st === 'bitti' ? 'ok' : p.st === 'hata' ? 'err' : ''); pill.textContent = p.st; d.appendChild(pill); pl.appendChild(d) })
+  const hs = $('#hist'); hs.textContent = ''
+  if (!(s.history || []).length) hs.innerHTML = '<span class="muted">Henüz iş yapılmadı.</span>'
+  ;(s.history || []).forEach((h) => { const d = document.createElement('div'); d.className = 'h ' + (h.ok ? 'ok' : 'bad'); const t = document.createElement('div'); t.innerHTML = '<span class="t"></span><span class="ms"></span>'; t.querySelector('.t').textContent = `${h.ok ? '✔' : '✖'} ${h.type}`; t.querySelector('.ms').textContent = (h.ms / 1000).toFixed(1) + ' sn'; const m = document.createElement('div'); m.className = 'm'; m.textContent = h.msg; d.append(t, m); hs.appendChild(d) })
+  // istatistik
+  const st = s.stats || {}; const kv = $('#kv'); kv.textContent = ''
+  const rate = st.actions ? Math.round((1 - st.fails / st.actions) * 100) + '%' : '-'
+  const memn = s.mem ? (s.mem.entries ?? s.mem.total ?? Object.keys(s.mem).length) : '-'
+  ;[['Çalışma süresi', fmtDur(s.uptime || 0)], ['Kazılan blok', st.dug ?? 0], ['Konulan blok', st.placed ?? 0], ['Ölüm', st.deaths ?? 0], ['Yapılan iş', st.actions ?? 0], ['Başarı oranı', rate], ['YZ çağrısı', st.aiCalls ?? 0], ['Atılma', st.kicks ?? 0], ['Yeniden bağlanma', s.retry ?? 0], ['Öğrenilen plan', memn]]
+    .forEach(([k, v]) => { const d = document.createElement('div'); d.innerHTML = '<div class="k"></div><div class="v"></div>'; d.children[0].textContent = k; d.children[1].textContent = v; kv.appendChild(d) })
+  chips($('#plugins'), s.plugins || [], (c, p) => { c.textContent = p })
+  // noktalar (uzaklıkla)
+  chips($('#homes'), Object.entries(s.homes || {}), (c, [n, p]) => { const d = on ? Math.round(Math.hypot(p[0] - s.pos[0], p[2] - s.pos[2])) : null; c.textContent = `📌 ${n}: ${p.join(', ')}` + (d !== null ? ` (${d}m)` : '') })
+}
+document.querySelectorAll('#tabs .tab').forEach((b) => {
+  b.onclick = () => {
+    document.querySelectorAll('#tabs .tab').forEach((x) => x.classList.toggle('on', x === b))
+    document.querySelectorAll('.pane').forEach((p) => p.classList.toggle('on', p.id === 'tab-' + b.dataset.tab))
+    try { renderState() } catch (e) { /* */ }
+  }
+})
+// giriş kutusunda dönen örnek komutlar
+{
+  const ex = ['20 odun topla, sonra yanıma gel', 'bana elmas kazma ver', 'şematiği kur: buz pisti', 'otomatik hasat', 'afk ol', 'demir damarını kaz', 'beni koru', 'durum', 'yanıma uç', 'tarla kur', '/gamemode creative']
+  let k = 0
+  setInterval(() => { const i = $('#in-text'); if (i && document.activeElement !== i && !i.value) i.placeholder = `Örn: ${ex[k++ % ex.length]}   ( / ile başlayan = oyun komutu )` }, 5000)
 }
 
 // ---------- gönderme
@@ -359,9 +522,13 @@ $('#btn-upload').onclick = () => $('#f-upload').click()
 $('#f-upload').onchange = async (e) => {
   for (const file of e.target.files) {
     try {
+      toast(file.name + ' yükleniyor (' + Math.round(file.size / 1024) + ' KB)...')
       const r = await fetch('/upload?name=' + encodeURIComponent(file.name), { method: 'POST', body: file })
-      const j = await r.json()
-      if (!r.ok) toast(file.name + ': ' + (j.error || 'yüklenemedi')); else toast(file.name + ' yüklendi.')
+      const txt = await r.text()
+      let j = null
+      try { j = JSON.parse(txt) } catch (e) { /* JSON değil */ }
+      if (!j) toast(file.name + ': sunucu geçerli yanıt vermedi (HTTP ' + r.status + (/^\s*<!doctype|^\s*<html/i.test(txt) ? ', HTML hata sayfası: sunucu yeniden başlıyor ya da bellek doldu olabilir; 1 dk sonra tekrar dene' : txt ? ': ' + txt.slice(0, 80) : ', boş yanıt: sunucu çökmüş olabilir (Render log\'una bak)') + ')')
+      else if (!r.ok) toast(file.name + ': ' + (j.error || 'yüklenemedi')); else toast(file.name + ' yüklendi.' + (j.note ? ' ' + j.note : ''))
     } catch (err) { toast('Yükleme hatası: ' + err.message) }
   }
   e.target.value = ''

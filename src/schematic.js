@@ -73,6 +73,18 @@ function resolveFile(input) {
   return null
 }
 
+// Yüklemede bellek harcamadan hızlı kontrol: gzip/zlib ya da ham NBT başlığı
+function quickCheck(name) {
+  const full = path.join(SCHEM_DIR, name)
+  const fd = fs.openSync(full, 'r')
+  try {
+    const b = Buffer.alloc(3)
+    fs.readSync(fd, b, 0, 3, 0)
+    const ok = (b[0] === 0x1f && b[1] === 0x8b) || b[0] === 0x78 || b[0] === 0x0a
+    if (!ok) throw new Error('dosya bir şematik gibi görünmüyor (gzip/NBT başlığı yok)')
+  } finally { fs.closeSync(fd) }
+}
+
 function saveFile(name, buffer) {
   ensureDir()
   if (buffer.length > MAX_FILE_BYTES) throw new Error(`dosya ${fmtBytes(MAX_FILE_BYTES)} sınırını aşıyor`)
@@ -104,7 +116,7 @@ function pushBlock(out, x, y, z, name, props) {
 }
 
 function decodeVarints(bytes, expected) {
-  const out = new Array(expected)
+  const out = new Int32Array(expected)
   let n = 0
   let value = 0
   let shift = 0
@@ -179,8 +191,9 @@ function parseLitematic(d) {
     const bits = Math.max(2, Math.ceil(Math.log2(pal.length)))
     const mask = bits >= 32 ? 0xffffffff : (2 ** bits) - 1
     const L = region.BlockStates
-    const words = new Uint32Array(L.length * 2)
-    for (let i = 0; i < L.length; i++) { words[2 * i] = L[i][1] >>> 0; words[2 * i + 1] = L[i][0] >>> 0 }   // [hi, lo]
+    let words
+    if (L && L.isLongWords) words = L   // minnbt: zaten (alt, üst) sıralı düz dizi
+    else { words = new Uint32Array(L.length * 2); for (let i = 0; i < L.length; i++) { words[2 * i] = L[i][1] >>> 0; words[2 * i + 1] = L[i][0] >>> 0 } }   // prismarine: [hi, lo]
     const total = ax * ay * az
     const layer = ax * az
     for (let i = 0; i < total; i++) {
@@ -206,9 +219,13 @@ function parseLitematic(d) {
 }
 
 async function parseBuffer(buffer, ext) {
-  let parsed
-  try { parsed = (await nbt.parse(buffer)).parsed } catch (e) { throw new Error(`dosya okunamadı (bozuk ya da NBT değil): ${e.message}`) }
-  const d = nbt.simplify(parsed)
+  let d = null
+  try { d = require('./minnbt').parse(buffer) } catch (e) { d = null }   // hafif okuyucu; olmazsa prismarine-nbt'ye düş
+  if (!d) {
+    let parsed
+    try { parsed = (await nbt.parse(buffer)).parsed } catch (e) { throw new Error(`dosya okunamadı (bozuk ya da NBT değil): ${e.message}`) }
+    d = nbt.simplify(parsed)
+  }
   let out
   if (ext === '.litematic' || ext === '.litematica') out = parseLitematic(d)
   else if (ext === '.schem') out = parseSponge(d)
@@ -325,7 +342,7 @@ function describe(schem, mcData, haveFn) {
 }
 
 module.exports = {
-  parseLitematic, SCHEM_DIR, EXTS, MAX_FILE_BYTES, MAX_LOAD_BYTES, fmtBytes, listFiles, resolveFile, saveFile, deleteFile, sanitizeName, ensureDir,
+  parseLitematic, quickCheck, SCHEM_DIR, EXTS, MAX_FILE_BYTES, MAX_LOAD_BYTES, fmtBytes, listFiles, resolveFile, saveFile, deleteFile, sanitizeName, ensureDir,
   load, parseBuffer, parseBlockString, rotate, rotateProps, materials, missingMaterials, blockToItem,
   describe,
 }

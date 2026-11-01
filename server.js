@@ -20,6 +20,16 @@ process.on('unhandledRejection', (e) => console.error('[!] Yakalanmamış hata:'
 process.on('uncaughtException', (e) => console.error('[!] Beklenmeyen hata:', e && e.message ? e.message : e))
 
 const bots = new Map()
+// Bot listesi diske yazılır: sunucu çöküp yeniden başlarsa botlar kendiliğinden geri gelir (Render ücretsiz diski silinirse panel yedeği devreye girer)
+const BOTS_FILE = path.join(process.env.DATA_DIR || path.join(__dirname, 'data'), 'bots.json')
+const wanted = new Map()   // name -> cfg (kullanıcı durdurmadıysa)
+function saveBots() {
+  try {
+    fs.mkdirSync(path.dirname(BOTS_FILE), { recursive: true })
+    const out = [...wanted.values()].map((c) => ({ ...c, groqKey: c.groqKey && c.groqKey === ENV_KEY ? '' : c.groqKey }))
+    fs.writeFileSync(BOTS_FILE, JSON.stringify(out))
+  } catch (e) { /* disk yazılamıyorsa panel yedeği kullanılır */ }
+}
 
 const server = http.createServer((req, res) => {
   // Sağlık kontrolü: UptimeRobot gibi bir izleyici ya da kendi kendine ping bunu çağırır (Render ücretsiz planı uyumasın)
@@ -143,6 +153,7 @@ async function handle(ws, msg) {
       if (old) { old.stop(); old.cfg = cfg }
       const inst = new BotInstance(cfg, makeEmit(cfg.name), { isManaged: (n) => bots.has(n) && n !== cfg.name })
       bots.set(cfg.name, inst)
+      wanted.set(cfg.name, cfg); saveBots()
       broadcast({ t: 'added', summary: inst.summary(), logs: [] })
       inst.start()
       break
@@ -150,16 +161,17 @@ async function handle(ws, msg) {
     case 'disconnect': {
       const inst = bots.get(msg.name)
       if (inst) inst.stop()
+      wanted.delete(msg.name); saveBots()
       break
     }
     case 'reconnect': {
       const inst = bots.get(msg.name)
-      if (inst) { inst.stop(); setTimeout(() => inst.start(), 800) }
+      if (inst) { inst.stop(); setTimeout(() => inst.start(), 800); wanted.set(msg.name, inst.cfg); saveBots() }
       break
     }
     case 'remove': {
       const inst = bots.get(msg.name)
-      if (inst) { inst.stop(); bots.delete(msg.name); broadcast({ t: 'removed', name: msg.name }) }
+      if (inst) { inst.stop(); bots.delete(msg.name); wanted.delete(msg.name); saveBots(); broadcast({ t: 'removed', name: msg.name }) }
       break
     }
     case 'say': {
@@ -214,6 +226,31 @@ if (process.env.RENDER_EXTERNAL_URL && process.env.KEEPALIVE !== '0' && typeof f
   setInterval(() => { fetch(url).catch(() => { /* önemsiz */ }) }, 4 * 60 * 1000).unref()
   console.log(`Uyutma koruması açık: ${url} adresine 4 dakikada bir istek atılacak`)
 }
+
+// Çökme sonrası: kayıtlı botları geri getir
+setTimeout(() => {
+  try {
+    if (!fs.existsSync(BOTS_FILE)) return
+    const list = JSON.parse(fs.readFileSync(BOTS_FILE, 'utf8'))
+    list.forEach((c, i) => setTimeout(() => {
+      try {
+        if (bots.has(c.name)) return
+        const cfg = sanitizeCfg({ ...c, groqKey: c.groqKey || ENV_KEY })
+        const inst = new BotInstance(cfg, makeEmit(cfg.name), { isManaged: (n) => bots.has(n) && n !== cfg.name })
+        bots.set(cfg.name, inst); wanted.set(cfg.name, cfg)
+        broadcast({ t: 'added', summary: inst.summary(), logs: [] })
+        inst.log('info', 'Sunucu yeniden başladığı için bot otomatik geri getirildi.')
+        inst.start()
+      } catch (e) { console.error('[!] Bot geri yüklenemedi:', e.message) }
+    }, i * 3000))
+  } catch (e) { console.error('[!] bots.json okunamadı:', e.message) }
+}, 1500)
+
+// Bellek izleme: Render ücretsiz 512 MB; dolmadan önce uyar
+setInterval(() => {
+  const mb = Math.round(process.memoryUsage().rss / 1048576)
+  if (mb > Number(process.env.MEM_WARN_MB || 400)) for (const b of bots.values()) b.log('warn', `Bellek yüksek: ${mb} MB (Render ücretsiz sınırı 512 MB; dolarsa sunucu çöker ve bot düşer).`)
+}, 30000).unref()
 
 server.listen(PORT, HOST, () => {
   console.log(`Panel hazır: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`)

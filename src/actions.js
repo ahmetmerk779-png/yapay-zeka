@@ -2287,45 +2287,55 @@ async function schematic(inst, a, { cancelled }) {
   inst.log('info', `Şematik: ${s.file} (${s.size.x}x${s.size.y}x${s.size.z}, ${s.blocks.length} blok) -> başlangıç ${origin.x}, ${origin.y}, ${origin.z}${creative ? ' [creative: blokları kendi envanterine ekler]' : ''}`)
   await moveNear(inst, new Vec3(origin.x + Math.floor(s.size.x / 2), origin.y, origin.z + Math.floor(s.size.z / 2)))
 
-  const targets = []
-  const keep = new Set()
-  let unknown = 0
-  for (const b of s.blocks) {
-    const it = Sch.blockToItem(b, inst.mcData)
-    if (!it) continue                                   // hava, kapının üst yarısı gibi bilerek atlananlar
-    if (it.unknown) { unknown++; continue }
-    const pos = new Vec3(origin.x + b.x, origin.y + b.y, origin.z + b.z)
-    keep.add(`${pos.x},${pos.y},${pos.z}`)
-    let kind = 'normal'
-    if (b.name === 'water' || b.name === 'lava') kind = 'liquid'
-    else if (b.name === 'farmland') kind = 'farmland'
-    else if (/_slab$/.test(b.name) && b.props.type === 'double') kind = 'double'
-    targets.push({ pos, item: it.item, blockName: b.name, kind, props: b.props, hints: hintsFor(b.name, b.props) })
-  }
-  s.blocks = null   // ham liste artık gerekmiyor: belleği bırak
-  // Bellek koruması: ücretsiz barındırıcıda (512 MB) çok büyük yapı sunucuyu çökertir ve bot listeden düşer
+  // Bellek koruması: ücretsiz barındırıcıda (512 MB) çok büyük yapı sunucuyu çökertir ve bot listeden düşer.
+  // Hedefler tek seferde değil, parça parça üretilir (her blok ~600 bayt); ham liste tek başına küçük kalır.
+  const blocks = s.blocks
+  const total = blocks.length
   const limitMb = Number(process.env.MEM_LIMIT_MB) || 470
-  const estMb = Math.round(targets.length * 0.0006)   // blok başına ~600 bayt (hedef + konum + komut hücresi)
+  const estMb = Math.round(Math.min(total, Number(process.env.SCHEM_CHUNK) || 25000) * 0.0008) + Math.round(total * 0.00012)
   const rssMb = Math.round(process.memoryUsage().rss / 1048576)
   inst.log('info', `Şematik bellek: şu an ${rssMb} MB, tahmini +${estMb} MB, sınır ${limitMb} MB`)
   if (rssMb + estMb > limitMb) {
-    return fail(`şematik ${targets.length} blok; kurmak için ~${estMb} MB bellek lazım ama sunucuda ${rssMb}/${limitMb} MB dolu. Kurarsam sunucu çöker. Şematiği daha küçük parçalara böl, ücretli plana geç ya da MEM_LIMIT_MB değerini artır`)
+    return fail(`şematik ${total} blok; kurmak için ~${estMb} MB bellek lazım ama sunucuda ${rssMb}/${limitMb} MB dolu. Kurarsam sunucu çöker. Şematiği daha küçük parçalara böl, ücretli plana geç ya da MEM_LIMIT_MB değerini artır`)
   }
+  // Büyük yapıda süreyi baştan söyle (komut başına ~350 ms; haritalarda bloklar tek tek gider)
+  try {
+    if (total > 20000 && (await OpBuild.available(inst))) {
+      const perMs = Math.max(120, Number(process.env.OPBUILD_DELAY) || 350)
+      const hrs = Math.round((total * perMs) / 3600000 * 10) / 10
+      inst.narrate && inst.narrate(`Bu yapı ${total} blok. Komutla bile en kötü durumda yaklaşık ${hrs} saat sürebilir (aynı bloklar yan yana ise çok daha kısa). Devam ediyorum; durdurmak için "dur" de.`, 'info')
+    }
+  } catch (e) { /* tahmin başarısızsa sessiz geç */ }
+
   let cleared = 0
-  if (a.withAir) cleared = await clearRegion(inst, origin, s.size, keep, cancelled)
-  // Parça parça kur (alt katmanlardan yukarı): her parçadan sonra bellek boşalır, çökme riski azalır
+  if (a.withAir) {
+    const keep = new Set()
+    for (const b of blocks) { const it = Sch.blockToItem(b, inst.mcData); if (it && !it.unknown) keep.add(`${origin.x + b.x},${origin.y + b.y},${origin.z + b.z}`) }
+    cleared = await clearRegion(inst, origin, s.size, keep, cancelled)
+  }
   const CH = Number(process.env.SCHEM_CHUNK) || 25000
-  const total = targets.length
   const stats = { total: 0, placed: 0, failed: 0, noitem: 0, already: 0, scaffolds: 0, unreachable: 0, cancelled: false, blocked: null, viaCommand: 0, substituted: 0, wrongState: 0 }
-  let doneN = 0
-  while (targets.length && !cancelled()) {
-    const part = targets.splice(0, CH)
-    const st = await placeMany(inst, part, { cancelled, partial: a.partial, label: `şematik ${doneN}/${total}` })
-    doneN += part.length
+  let unknown = 0
+  for (let start = 0; start < total && !cancelled(); start += CH) {
+    const part = []
+    for (let i = start; i < Math.min(total, start + CH); i++) {
+      const b = blocks[i]
+      const it = Sch.blockToItem(b, inst.mcData)
+      if (!it) continue                                   // hava, kapının üst yarısı gibi bilerek atlananlar
+      if (it.unknown) { unknown++; continue }
+      const pos = new Vec3(origin.x + b.x, origin.y + b.y, origin.z + b.z)
+      let kind = 'normal'
+      if (b.name === 'water' || b.name === 'lava') kind = 'liquid'
+      else if (b.name === 'farmland') kind = 'farmland'
+      else if (/_slab$/.test(b.name) && b.props.type === 'double') kind = 'double'
+      part.push({ pos, item: it.item, blockName: b.name, kind, props: b.props, hints: hintsFor(b.name, b.props) })
+    }
+    if (!part.length) continue
+    const st = await placeMany(inst, part, { cancelled, partial: a.partial, label: `şematik ${start}/${total}` })
     for (const k of ['total', 'placed', 'failed', 'noitem', 'already', 'scaffolds', 'unreachable', 'viaCommand', 'substituted', 'wrongState']) stats[k] += st[k] || 0
     if (st.blocked) { stats.blocked = st.blocked; break }
     if (st.cancelled) { stats.cancelled = true; break }
-    if (targets.length) inst.log('info', `Şematik: ${doneN}/${total} blok işlendi, sıradaki parça...`)
+    if (start + CH < total) inst.log('info', `Şematik: ${Math.min(total, start + CH)}/${total} blok işlendi, sıradaki parça...`)
     await sleep(300)
   }
   if (cancelled()) stats.cancelled = true
@@ -2732,6 +2742,29 @@ async function afk(inst, a, { cancelled }) {
   }
   const msg = `${moves} küçük hareket${eats ? `, ${eats} kez yemek yedim` : ''}`
   return cancelled() ? ok(`afk bitti (${msg})`) : ok(`afk süresi doldu (${msg})`)
+}
+
+// Büyük yapılar (harita vb.) için: şematik sunucudaki WorldEdit klasöründeyse //schem load + //paste ile saniyeler içinde yapıştır
+async function we_paste(inst, a, { cancelled }) {
+  const bot = inst.bot
+  const has = (c) => (inst.hasCmd ? inst.hasCmd(c) : false)
+  if (!(has('/schem') || has('schem') || has('/schematic') || has('schematic') || has('/paste'))) return fail('Sunucuda WorldEdit //schem komutu yok ya da yetkim yok (OP/WorldEdit izni gerekir)')
+  const seen = []
+  const onMsg = (m) => { seen.push(String(m)); if (seen.length > 40) seen.shift() }
+  bot.on('messagestr', onMsg)
+  try {
+    bot.chat(`//schem load ${a.name}`)
+    await sleep(2000)
+    if (cancelled()) return fail('iptal edildi')
+    const loadFail = seen.find((m) => /not found|does not exist|no such|bulunamad|unknown (schematic|format)|cannot (find|read)|no (file|schematic)/i.test(m))
+    if (loadFail) return fail(`WorldEdit şematiği yükleyemedi: "${loadFail.slice(0, 140)}". Dosya sunucunun WorldEdit/FAWE "schematics" klasöründe olmalı (adı: ${a.name})`)
+    if (a.rotate) { bot.chat(`//rotate ${a.rotate}`); await sleep(900) }
+    bot.chat(a.ignoreAir ? '//paste -a' : '//paste')
+    await sleep(3500)
+  } finally { bot.removeListener('messagestr', onMsg) }
+  const pasteFail = seen.find((m) => /no clipboard|clipboard.*empty|nothing to paste|cannot paste|permission|izin|yetki/i.test(m))
+  if (pasteFail) return fail(`WorldEdit yapıştıramadı: "${pasteFail.slice(0, 140)}"`)
+  return ok(`WorldEdit ile "${a.name}" bulunduğum konuma yapıştırıldı (sunucudan hata gelmedi). Geri almak için //undo`)
 }
 
 // ---- parametrik ev
@@ -3785,7 +3818,7 @@ const EXEC = {
   attack, guard, shoot, place, break: break_, fill, shelter, equip, drop, give, craft, smelt, eat,
   use_item, store, take, inspect_chest, trade, activate_block, find, chat, command, wait,
   door, enchant, anvil, fill_bottles, brew, drink, nether_portal, build, write_sign,
-  redstone, schematic, schematic_info, list_schematics, download_schematic, web_search, crystal_pvp, duel, custom, skill: custom, make_farm, auto_farm, afk, house,
+  redstone, schematic, schematic_info, list_schematics, download_schematic, web_search, crystal_pvp, duel, custom, skill: custom, make_farm, auto_farm, afk, we_paste, house,
 }
 
 async function execute(inst, action, ctx) {

@@ -58,14 +58,10 @@ const server = http.createServer((req, res) => {
           fs.renameSync(tmpPath, finalPath)
           // Küçük/orta dosyalar doğrulanır; çok büyükler (bellekte açılamaz) doğrulanmadan saklanır
           let note = ''
-          const validateMax = Math.min(Sch.MAX_LOAD_BYTES, Number(process.env.SCHEM_VALIDATE_MAX) || 8 * 1024 * 1024)
-          if (size <= validateMax) {
-            try { await Sch.load(safe) } catch (e) { Sch.deleteFile(safe); throw e }
-          } else if (size > Sch.MAX_LOAD_BYTES) {
-            note = `dosya ${Sch.fmtBytes(size)}: saklandı ama bu sunucuda kurulamayabilir (bellek sınırı ${Sch.fmtBytes(Sch.MAX_LOAD_BYTES)})`
-          } else {
-            note = `dosya ${Sch.fmtBytes(size)}: bellek tasarrufu için doğrulanmadan saklandı, kurulurken hata verirse bot söyler`
-          }
+          // Yükleme sırasında dosyayı belleğe açmıyoruz (Render ücretsiz 512 MB: çöküp 502 verir). İçerik, kurulurken doğrulanır.
+          try { Sch.quickCheck(safe) } catch (e) { Sch.deleteFile(safe); throw e }
+          if (size > Sch.MAX_LOAD_BYTES) note = `dosya ${Sch.fmtBytes(size)}: saklandı ama bu sunucuda kurulamayabilir (bellek sınırı ${Sch.fmtBytes(Sch.MAX_LOAD_BYTES)})`
+          console.log(`[yükleme] ${safe} ${Sch.fmtBytes(size)} kaydedildi (rss ${Math.round(process.memoryUsage().rss / 1048576)} MB)`)
           broadcast({ t: 'schematics', files: Sch.listFiles() })
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, name: safe, note }))
         } catch (e) {

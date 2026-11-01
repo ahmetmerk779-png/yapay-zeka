@@ -246,6 +246,7 @@ const ACTION_KEYS = [
   [/pvp|d[uü]ell?o|d[oö]v[uü][sş]|sava[sş]|kristal|crystal|mace|spear|m[ıi]zrak|balta|\baxe|k[ıi]l[ıi][cç]|sword|uhc|smp|\bpot\b|sald[ıi]r|fight|spar/i, ['duel', 'crystal_pvp', 'shoot', 'guard']],
   [/\bev\b|bar[ıi]nak|yap\b|yap[ıi]|kur\b|kurul|build|fill|duvar|kap[ıi]|door|house|shelter|in[sş]a|doldur|temizle/i, ['house', 'fill', 'shelter', 'build', 'door']],
   [/tarla|farm|hasat|[cç]iftlik|hayvan|koyun|inek|bal[ıi]k|fish|breed|[cç]iftle[sş]|shear|yem/i, ['farm', 'auto_farm', 'make_farm', 'breed', 'shear', 'fish']],
+  [/map|harita|worldedit|paste|yap[ıi][sş]t[ıi]r|\/\/schem/i, ['we_paste', 'schematic', 'list_schematics']],
   [/afk|ba[sş][ıi]nda bekle|sunucuda kal|at[ıi]lma/i, ['afk']],
   [/f[ıi]r[ıi]n|erit|pi[sş]ir|smelt|cook/i, ['smelt']],
   [/b[uü]y[uü]|enchant|[oö]rs|anvil|iksir|brew|simya|potion|portal|nether|[sş]i[sş]e|drink/i, ['enchant', 'anvil', 'brew', 'drink', 'fill_bottles', 'nether_portal']],

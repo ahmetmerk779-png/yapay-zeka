@@ -11,7 +11,7 @@ const ai = require('./src/ai')
 const Sch = require('./src/schematic')
 
 const PORT = parseInt(process.env.PANEL_PORT || '3000')
-const HOST = process.env.PANEL_HOST || '0.0.0.0'
+const HOST = process.env.PANEL_HOST || '127.0.0.1'
 const DEFAULT_MODEL = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile'
 const ENV_KEY = process.env.GROQ_API_KEY || ''
 
@@ -57,9 +57,14 @@ const server = http.createServer((req, res) => {
           fs.renameSync(tmpPath, finalPath)
           // Küçük/orta dosyalar doğrulanır; çok büyükler (bellekte açılamaz) doğrulanmadan saklanır
           let note = ''
-          if (size <= Sch.MAX_LOAD_BYTES) {
+          const validateMax = Math.min(Sch.MAX_LOAD_BYTES, Number(process.env.SCHEM_VALIDATE_MAX) || 8 * 1024 * 1024)
+          if (size <= validateMax) {
             try { await Sch.load(safe) } catch (e) { Sch.deleteFile(safe); throw e }
-          } else note = `dosya ${Sch.fmtBytes(size)}: saklandı ama doğrulanamadı ve bu sunucuda kurulamayabilir (bellek sınırı ${Sch.fmtBytes(Sch.MAX_LOAD_BYTES)})`
+          } else if (size > Sch.MAX_LOAD_BYTES) {
+            note = `dosya ${Sch.fmtBytes(size)}: saklandı ama bu sunucuda kurulamayabilir (bellek sınırı ${Sch.fmtBytes(Sch.MAX_LOAD_BYTES)})`
+          } else {
+            note = `dosya ${Sch.fmtBytes(size)}: bellek tasarrufu için doğrulanmadan saklandı, kurulurken hata verirse bot söyler`
+          }
           broadcast({ t: 'schematics', files: Sch.listFiles() })
           res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ ok: true, name: safe, note }))
         } catch (e) {

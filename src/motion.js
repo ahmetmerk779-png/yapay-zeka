@@ -117,7 +117,7 @@ function startIdleGlance(inst) {
     try {
       if (!inst.ready || Date.now() < next) return
       if (process.env.HUMANIZE === '0' || (inst.cfg && inst.cfg.humanize === false)) return
-      const idle = (inst.mode === 'idle' || inst.mode === 'follow') && !bot.targetDigBlock && !bot.pathfinder.isMoving() && !(bot.smoothLook && bot.smoothLook.fast)
+      const idle = (inst.mode === 'idle' || inst.mode === 'follow') && !bot.targetDigBlock && !bot.pathfinder.isMoving() && !(bot.smoothLook && bot.smoothLook.fast) && !bot._gazeActive
       next = Date.now() + 2500 + Math.random() * 5500
       if (!idle || bot.isSleeping) return
       const me = bot.entity.position

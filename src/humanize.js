@@ -20,10 +20,25 @@ function install(inst) {
     last[kind] = Math.max(now, due)
     if (wait > 0) await sleep(wait)
   }
-  const wrapAsync = (name, kind, min, max, onOk) => {
+  // Etkileşimden önce hedefe (sandık, kapı, köylü...) yumuşakça bak: insan önce bakar, sonra tıklar
+  const wrapAng = (a) => { let x = (a + Math.PI) % (Math.PI * 2); if (x < 0) x += Math.PI * 2; return x - Math.PI }
+  async function preLook(point) {
+    try {
+      if (!point || !bot.entity || !bot.smoothLook || bot.smoothLook.fast) return
+      const eye = bot.entity.position.offset(0, 1.62, 0)
+      const dx = point.x - eye.x, dy = point.y - eye.y, dz = point.z - eye.z
+      const yaw = Math.atan2(-dx, -dz), pitch = Math.atan2(dy, Math.hypot(dx, dz))
+      const off = Math.hypot(wrapAng(yaw - bot.entity.yaw), pitch - bot.entity.pitch)
+      if (off < 0.22) return
+      await Promise.race([bot.lookAt(point), sleep(1000)])
+      await sleep(rnd(50, 150))
+    } catch (e) { /* bakamazsa yine de devam */ }
+  }
+  const wrapAsync = (name, kind, min, max, onOk, pre) => {
     const orig = bot[name]
     if (typeof orig !== 'function') return
     bot[name] = async function (...args) {
+      if (pre) { try { await pre(...args) } catch (e) { /* */ } }
       await space(kind, min, max)
       const r = await orig.apply(bot, args)
       if (onOk) { try { onOk() } catch (e) { /* sayaç */ } }
@@ -33,7 +48,8 @@ function install(inst) {
   const countPlace = () => { if (inst.stats) inst.stats.placed++ }
   wrapAsync('placeBlock', 'place', 120, 260, countPlace)
   wrapAsync('_placeBlockWithOptions', 'place', 120, 260, countPlace)
-  wrapAsync('activateBlock', 'use', 100, 240)
+  wrapAsync('activateBlock', 'use', 100, 240, null, (b) => (b && b.position ? preLook(b.position.offset(0.5, 0.5, 0.5)) : null))
+  wrapAsync('activateEntity', 'use', 100, 240, null, (e) => (e && e.position ? preLook(e.position.offset(0, (e.height || 1.6) * 0.7, 0)) : null))
   wrapAsync('equip', 'equip', 80, 190)
 
   // ---- 2) Saldırı: gerçekçi tıklama hızı (≈6-10 CPS) ve vanilla menzili (survival 3, creative 5)

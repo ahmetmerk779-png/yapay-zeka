@@ -10,6 +10,7 @@ const minecraftData = require('minecraft-data')
 
 const ai = require('./ai')
 const { validateActions } = require('./validate')
+const BOOT_ID = `${process.pid}-${Date.now()}`   // bu süreç; çökme sonrası yeni süreçte değişir
 const { execute, equipBestWeapon, EXEC } = require('./actions')
 let Intent = null
 try { Intent = require('./intent') } catch (e) { /* intent.js yoksa her komut yapay zekaya gider */ }
@@ -314,6 +315,7 @@ class BotInstance {
         const Motion = require('./motion')
         Motion.installSmoothLook(bot)
         Motion.installHumanDig(bot)
+        try { require('./humanlook').install(this) } catch (e) { this.log('warn', 'humanlook yüklenemedi: ' + e.message) }
         try { require('./humanize').install(this) } catch (e) { this.log('warn', 'humanize yüklenemedi: ' + e.message) }
         try { require('./autotool').install(this) } catch (e) { this.log('warn', 'autotool yüklenemedi: ' + e.message) }
         Motion.tuneMovements(this.movements, this.mcData)
@@ -537,8 +539,11 @@ class BotInstance {
     if (this.sending) return
     this.sending = true
     while (this.outQueue.length) {
-      try { this.bot.chat(this.outQueue.shift()) } catch (e) { /* bağlantı yok */ }
-      await new Promise((r) => setTimeout(r, 1100))
+      const msg = this.outQueue.shift()
+      // İnsan gibi yaz: mesajın uzunluğuna göre klavye süresi (komutlar hemen gider)
+      if (process.env.TYPING !== '0' && !String(msg).startsWith('/')) await new Promise((r) => setTimeout(r, Math.min(3500, 450 + String(msg).length * 45 + Math.random() * 450)))
+      try { this.bot.chat(msg) } catch (e) { /* bağlantı yok */ }
+      await new Promise((r) => setTimeout(r, 900 + Math.random() * 500))
     }
     this.sending = false
   }
@@ -869,7 +874,7 @@ class BotInstance {
 
   // ---- iş kaydı: bağlantı kopsa da yarım iş sürsün
   taskFile() { return path.join(DATA_DIR, `task-${safeName(this.cfg.name)}.json`) }
-  saveTask(t) { try { fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(this.taskFile(), JSON.stringify(t)) } catch (e) { /* önemsiz */ } }
+  saveTask(t) { try { if (!t.boot) t.boot = BOOT_ID; fs.mkdirSync(DATA_DIR, { recursive: true }); fs.writeFileSync(this.taskFile(), JSON.stringify(t)) } catch (e) { /* önemsiz */ } }
   clearTask() { this.task = null; try { fs.unlinkSync(this.taskFile()) } catch (e) { /* yok */ } }
   loadTask() { try { return JSON.parse(fs.readFileSync(this.taskFile(), 'utf8')) } catch (e) { return null } }
 
@@ -878,6 +883,11 @@ class BotInstance {
     const t = this.loadTask()
     if (!t || !Array.isArray(t.raw) || !t.raw.length) return
     if (Date.now() - t.t > 30 * 60 * 1000) { this.clearTask(); return }          // 30 dk'dan eski iş devam ettirilmez
+    // Büyük şematik kurarken sunucu çöküp yeniden başladıysa (farklı süreç) aynı işe tekrar girme: çökme döngüsüne sokar
+    if (t.boot && t.boot !== BOOT_ID && t.raw.some((a) => a && a.type === 'schematic')) {
+      this.log('warn', 'Şematik kurarken sunucu yeniden başlamış (büyük olasılıkla bellek doldu). Çökme döngüsü olmasın diye işe otomatik devam etmiyorum; istersen tekrar söyle.')
+      this.clearTask(); return
+    }
     if ((t.tries || 0) >= 3) { this.log('warn', 'Yarım iş 3 kez denendi, vazgeçildi.'); this.clearTask(); return }
     const rest = t.raw.slice(t.done || 0)
     if (!rest.length) { this.clearTask(); return }
